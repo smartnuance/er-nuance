@@ -1,0 +1,53 @@
+[package]
+name = "er-nuance"
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.85"
+description = "Desktop navigator and visual diff for large Mermaid ER diagrams"
+license = "MIT"
+authors = ["Simon Wehrli"]
+repository = "https://github.com/smartnuance/er-nuance"
+homepage = "https://github.com/smartnuance/er-nuance"
+readme = "README.md"
+keywords = ["mermaid", "erd", "diagram", "database", "diff"]
+categories = ["visualization", "development-tools", "database"]
+exclude = ["docs/superpowers/"]
+
+[[bin]]
+name = "ernuance"
+path = "src/main.rs"
+
+[dependencies]
+clap = { version = "4.6.7", features = ["derive"] }
+eframe = "0.36"
+egui = "0.36"
+gix = { version = "0.89.0", default-features = false, features = ["revision", "index", "sha1"] }
+rfd = "0.17"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+
+[lints.rust]
+unsafe_code = "forbid"
+
+[lints.clippy]
+dbg_macro = "warn"
+todo = "warn"
+
+[profile.dev.package."*"]
+opt-level = 2
+
+# The profile that 'dist' will build with
+[profile.dist]
+inherits = "release"
+lto = "thin"
+
+[dev-dependencies]
+egui_kittest = { version = "0.36", features = ["wgpu", "eframe"] }
+image = { version = "0.25", default-features = false, features = ["png"] }
+tempfile = "3.27.0"
+
+[target.'cfg(target_os = "macos")'.dependencies]
+muda = "0.21.2"
+
+[profile.dev]
+opt-level = 1

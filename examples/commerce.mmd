@@ -1,0 +1,474 @@
+---
+title: Commerce platform
+---
+erDiagram
+    %% Groups are an ER-Navigator extension; Mermaid treats these lines as comments.
+    %% group Customers: CUSTOMER, ADDRESS, CUSTOMER_SEGMENT, LOYALTY_ACCOUNT, LOYALTY_TRANSACTION, WISHLIST, WISHLIST_ITEM
+    %% group Catalog: PRODUCT, PRODUCT_VARIANT, CATEGORY, BRAND, ATTRIBUTE, VARIANT_ATTRIBUTE_VALUE, PRODUCT_IMAGE, PRICE_LIST, PRICE
+    %% group Orders: CART, CART_ITEM, ORDER, ORDER_LINE, ORDER_STATUS_HISTORY, RETURN, RETURN_LINE, COUPON, ORDER_COUPON
+    %% group Payments: PAYMENT, PAYMENT_METHOD, REFUND, INVOICE, INVOICE_LINE, TAX_RATE
+    %% group Inventory: WAREHOUSE, STOCK_LEVEL, STOCK_MOVEMENT, SUPPLIER, PURCHASE_ORDER, PURCHASE_ORDER_LINE
+    %% group Fulfilment: SHIPMENT, SHIPMENT_LINE, CARRIER, SHIPPING_METHOD, TRACKING_EVENT
+    %% group Marketing: CAMPAIGN, CAMPAIGN_TARGET, EMAIL_MESSAGE, REVIEW, REVIEW_VOTE
+    %% group Identity: USER_ACCOUNT, ROLE, USER_ROLE, AUDIT_LOG, API_KEY
+
+    %% Descriptions (shown with D) and #tags (chips; filter in the Tags panel).
+    %% describe CUSTOMER: #pii A person or company that buys. Guests become customers at checkout.
+    %% describe ADDRESS: #pii A postal address. Orders reference it, so it is never edited once used.
+    %% describe ORDER: The customer's commitment to buy: cart → order → payment → shipment. Totals are frozen when the order is placed.
+    %% describe ORDER_STATUS_HISTORY: #append-only Every status change of an order, never edited.
+    %% describe PAYMENT: Money received through a payment service provider (`psp_reference`).
+    %% describe INVOICE: #ledger The legal document. *Re-issued, never edited.*
+    %% describe LOYALTY_TRANSACTION: #append-only #ledger Points earned and spent; the balance is their sum.
+    %% describe STOCK_MOVEMENT: #append-only #ledger Every change of stock, with its reason.
+    %% describe STOCK_LEVEL: #derived Current stock per variant and warehouse, recomputed from **stock movements**.
+    %% describe PRICE: #derived The effective price of a variant in a price list.
+    %% describe AUDIT_LOG: #append-only #pii Who did what, and when.
+
+    %% ---- Customers
+    CUSTOMER ||--o{ ADDRESS : "has"
+    CUSTOMER }o--o| CUSTOMER_SEGMENT : "belongs to"
+    CUSTOMER ||--o| LOYALTY_ACCOUNT : "owns"
+    LOYALTY_ACCOUNT ||--o{ LOYALTY_TRANSACTION : "records"
+    CUSTOMER ||--o{ WISHLIST : "keeps"
+    WISHLIST ||--o{ WISHLIST_ITEM : "contains"
+    WISHLIST_ITEM }o--|| PRODUCT_VARIANT : "refers to"
+    CUSTOMER |o--|| USER_ACCOUNT : "logs in as"
+
+    %% ---- Catalog
+    PRODUCT ||--|{ PRODUCT_VARIANT : "has"
+    PRODUCT }o--|| CATEGORY : "in"
+    CATEGORY |o--o{ CATEGORY : "parent of"
+    PRODUCT }o--o| BRAND : "made by"
+    PRODUCT_VARIANT ||--o{ VARIANT_ATTRIBUTE_VALUE : "described by"
+    VARIANT_ATTRIBUTE_VALUE }o--|| ATTRIBUTE : "of"
+    PRODUCT ||--o{ PRODUCT_IMAGE : "shown in"
+    PRICE_LIST ||--o{ PRICE : "defines"
+    PRICE }o--|| PRODUCT_VARIANT : "for"
+    PRICE_LIST }o..o| CUSTOMER_SEGMENT : "applies to"
+
+    %% ---- Orders
+    CUSTOMER ||--o{ CART : "fills"
+    CART ||--o{ CART_ITEM : "contains"
+    CART_ITEM }o--|| PRODUCT_VARIANT : "of"
+    CUSTOMER ||--o{ ORDER : "places"
+    ORDER ||--|{ ORDER_LINE : "contains"
+    ORDER_LINE }o--|| PRODUCT_VARIANT : "of"
+    ORDER }o--|| ADDRESS : "ships to"
+    ORDER }o--|| ADDRESS : "bills to"
+    ORDER ||--|{ ORDER_STATUS_HISTORY : "tracked by"
+    ORDER ||--o{ RETURN : "returned via"
+    RETURN ||--|{ RETURN_LINE : "contains"
+    RETURN_LINE }o--|| ORDER_LINE : "returns"
+    ORDER ||--o{ ORDER_COUPON : "uses"
+    ORDER_COUPON }o--|| COUPON : "redeems"
+    CART |o..o| ORDER : "becomes"
+
+    %% ---- Payments
+    ORDER ||--o{ PAYMENT : "paid by"
+    PAYMENT }o--|| PAYMENT_METHOD : "using"
+    CUSTOMER ||--o{ PAYMENT_METHOD : "stores"
+    PAYMENT ||--o{ REFUND : "refunded by"
+    RETURN |o..o| REFUND : "triggers"
+    ORDER ||--o{ INVOICE : "billed in"
+    INVOICE ||--|{ INVOICE_LINE : "contains"
+    INVOICE_LINE }o--|| ORDER_LINE : "bills"
+    INVOICE_LINE }o--|| TAX_RATE : "taxed at"
+
+    %% ---- Inventory
+    WAREHOUSE ||--o{ STOCK_LEVEL : "holds"
+    STOCK_LEVEL }o--|| PRODUCT_VARIANT : "of"
+    WAREHOUSE ||--o{ STOCK_MOVEMENT : "logs"
+    STOCK_MOVEMENT }o--|| PRODUCT_VARIANT : "moves"
+    SUPPLIER ||--o{ PURCHASE_ORDER : "receives"
+    PURCHASE_ORDER ||--|{ PURCHASE_ORDER_LINE : "contains"
+    PURCHASE_ORDER_LINE }o--|| PRODUCT_VARIANT : "orders"
+    PURCHASE_ORDER }o--|| WAREHOUSE : "delivered to"
+    SUPPLIER }o--o{ BRAND : "distributes"
+
+    %% ---- Fulfilment
+    ORDER ||--o{ SHIPMENT : "fulfilled by"
+    SHIPMENT ||--|{ SHIPMENT_LINE : "contains"
+    SHIPMENT_LINE }o--|| ORDER_LINE : "ships"
+    SHIPMENT }o--|| WAREHOUSE : "leaves from"
+    SHIPMENT }o--|| CARRIER : "carried by"
+    SHIPMENT }o--|| SHIPPING_METHOD : "via"
+    SHIPPING_METHOD }o--|| CARRIER : "offered by"
+    SHIPMENT ||--o{ TRACKING_EVENT : "tracked by"
+    SHIPMENT_LINE |o..o| STOCK_MOVEMENT : "causes"
+
+    %% ---- Marketing
+    CAMPAIGN ||--o{ CAMPAIGN_TARGET : "targets"
+    CAMPAIGN_TARGET }o--|| CUSTOMER_SEGMENT : "segment"
+    CAMPAIGN ||--o{ EMAIL_MESSAGE : "sends"
+    EMAIL_MESSAGE }o--|| CUSTOMER : "to"
+    CAMPAIGN |o..o{ COUPON : "issues"
+    CUSTOMER ||--o{ REVIEW : "writes"
+    REVIEW }o--|| PRODUCT : "about"
+    REVIEW ||--o{ REVIEW_VOTE : "rated by"
+    REVIEW_VOTE }o--|| CUSTOMER : "cast by"
+
+    %% ---- Identity
+    USER_ACCOUNT ||--o{ USER_ROLE : "has"
+    USER_ROLE }o--|| ROLE : "grants"
+    USER_ACCOUNT ||--o{ AUDIT_LOG : "performed"
+    USER_ACCOUNT ||--o{ API_KEY : "owns"
+    USER_ACCOUNT |o--o{ USER_ACCOUNT : "invited"
+
+    %% ---- Unrelated reference tables
+    CURRENCY {
+        char(3) code PK
+        string name
+        int minor_units
+    }
+    COUNTRY {
+        char(2) iso PK
+        string name
+        char(3) currency FK
+    }
+    COUNTRY }o--|| CURRENCY : "uses"
+    ADDRESS }o--|| COUNTRY : "in"
+    TAX_RATE }o--|| COUNTRY : "for"
+
+    CUSTOMER {
+        uuid id PK
+        string email UK "Login and contact email"
+        string first_name
+        string last_name
+        date birth_date "Optional, used for age checks"
+        uuid segment_id FK
+        timestamp created_at
+        bool marketing_opt_in
+    }
+    ADDRESS {
+        uuid id PK
+        uuid customer_id FK
+        string line1
+        string line2
+        string postal_code
+        string city
+        char(2) country FK
+        bool is_default
+    }
+    CUSTOMER_SEGMENT {
+        uuid id PK
+        string name UK
+        string rule "Expression evaluated nightly"
+    }
+    LOYALTY_ACCOUNT {
+        uuid id PK
+        uuid customer_id FK, UK
+        int points
+        string tier
+    }
+    LOYALTY_TRANSACTION {
+        uuid id PK
+        uuid account_id FK
+        int delta
+        string reason
+        timestamp at
+    }
+    WISHLIST {
+        uuid id PK
+        uuid customer_id FK
+        string name
+        bool public
+    }
+    WISHLIST_ITEM {
+        uuid wishlist_id PK, FK
+        uuid variant_id PK, FK
+        timestamp added_at
+    }
+    PRODUCT {
+        uuid id PK
+        string slug UK
+        string title
+        text description
+        uuid category_id FK
+        uuid brand_id FK
+        bool active
+    }
+    PRODUCT_VARIANT {
+        uuid id PK
+        uuid product_id FK
+        string sku UK
+        string title
+        int weight_g
+        string barcode
+    }
+    CATEGORY {
+        uuid id PK
+        uuid parent_id FK
+        string name
+        int position
+    }
+    BRAND {
+        uuid id PK
+        string name UK
+        string website
+    }
+    ATTRIBUTE {
+        uuid id PK
+        string code UK
+        string label
+        string kind "text, number, color, size"
+    }
+    VARIANT_ATTRIBUTE_VALUE {
+        uuid variant_id PK, FK
+        uuid attribute_id PK, FK
+        string value
+    }
+    PRODUCT_IMAGE {
+        uuid id PK
+        uuid product_id FK
+        string url
+        int position
+        string alt_text
+    }
+    PRICE_LIST {
+        uuid id PK
+        string name
+        char(3) currency FK
+        uuid segment_id FK
+        date valid_from
+        date valid_to
+    }
+    PRICE {
+        uuid price_list_id PK, FK
+        uuid variant_id PK, FK
+        decimal amount
+        decimal compare_at
+    }
+    CART {
+        uuid id PK
+        uuid customer_id FK
+        timestamp updated_at
+        uuid order_id FK "Set once checked out"
+    }
+    CART_ITEM {
+        uuid cart_id PK, FK
+        uuid variant_id PK, FK
+        int quantity
+    }
+    ORDER {
+        uuid id PK
+        string number UK
+        uuid customer_id FK
+        uuid shipping_address_id FK
+        uuid billing_address_id FK
+        char(3) currency
+        decimal total
+        string status
+        timestamp placed_at
+    }
+    ORDER_LINE {
+        uuid id PK
+        uuid order_id FK
+        uuid variant_id FK
+        int quantity
+        decimal unit_price
+        decimal discount
+    }
+    ORDER_STATUS_HISTORY {
+        uuid id PK
+        uuid order_id FK
+        string from_status
+        string to_status
+        timestamp at
+    }
+    RETURN {
+        uuid id PK
+        uuid order_id FK
+        string reason
+        string status
+    }
+    RETURN_LINE {
+        uuid id PK
+        uuid return_id FK
+        uuid order_line_id FK
+        int quantity
+    }
+    COUPON {
+        uuid id PK
+        string code UK
+        decimal value
+        string kind "percent or fixed"
+        uuid campaign_id FK
+    }
+    ORDER_COUPON {
+        uuid order_id PK, FK
+        uuid coupon_id PK, FK
+    }
+    PAYMENT {
+        uuid id PK
+        uuid order_id FK
+        uuid method_id FK
+        decimal amount
+        string psp_reference UK
+        string status "pending | authorized | captured | failed | refunded"
+    }
+    PAYMENT_METHOD {
+        uuid id PK
+        uuid customer_id FK
+        string kind
+        string token "PSP vault token, never the PAN"
+        string last4
+    }
+    REFUND {
+        uuid id PK
+        uuid payment_id FK
+        uuid return_id FK
+        decimal amount
+    }
+    INVOICE {
+        uuid id PK
+        string number UK
+        uuid order_id FK
+        date issued_on
+        decimal total
+    }
+    INVOICE_LINE {
+        uuid id PK
+        uuid invoice_id FK
+        uuid order_line_id FK
+        uuid tax_rate_id FK
+        decimal net
+        decimal tax
+    }
+    TAX_RATE {
+        uuid id PK
+        char(2) country FK
+        string category
+        decimal rate
+    }
+    WAREHOUSE {
+        uuid id PK
+        string code UK
+        string name
+        uuid address_id FK
+    }
+    STOCK_LEVEL {
+        uuid warehouse_id PK, FK
+        uuid variant_id PK, FK
+        int on_hand
+        int reserved
+    }
+    STOCK_MOVEMENT {
+        uuid id PK
+        uuid warehouse_id FK
+        uuid variant_id FK
+        int delta
+        string reason
+        timestamp at
+    }
+    SUPPLIER {
+        uuid id PK
+        string name
+        string email
+    }
+    PURCHASE_ORDER {
+        uuid id PK
+        uuid supplier_id FK
+        uuid warehouse_id FK
+        date expected_on
+        string status
+    }
+    PURCHASE_ORDER_LINE {
+        uuid id PK
+        uuid purchase_order_id FK
+        uuid variant_id FK
+        int quantity
+        decimal unit_cost
+    }
+    SHIPMENT {
+        uuid id PK
+        uuid order_id FK
+        uuid warehouse_id FK
+        uuid carrier_id FK
+        uuid method_id FK
+        string tracking_number
+        timestamp shipped_at
+    }
+    SHIPMENT_LINE {
+        uuid id PK
+        uuid shipment_id FK
+        uuid order_line_id FK
+        int quantity
+    }
+    CARRIER {
+        uuid id PK
+        string name
+        string tracking_url_template
+    }
+    SHIPPING_METHOD {
+        uuid id PK
+        uuid carrier_id FK
+        string name
+        decimal price
+    }
+    TRACKING_EVENT {
+        uuid id PK
+        uuid shipment_id FK
+        string code
+        string location
+        timestamp at
+    }
+    CAMPAIGN {
+        uuid id PK
+        string name
+        date starts_on
+        date ends_on
+    }
+    CAMPAIGN_TARGET {
+        uuid campaign_id PK, FK
+        uuid segment_id PK, FK
+    }
+    EMAIL_MESSAGE {
+        uuid id PK
+        uuid campaign_id FK
+        uuid customer_id FK
+        timestamp sent_at
+        timestamp opened_at
+    }
+    REVIEW {
+        uuid id PK
+        uuid product_id FK
+        uuid customer_id FK
+        int rating
+        text body
+        bool published
+    }
+    REVIEW_VOTE {
+        uuid review_id PK, FK
+        uuid customer_id PK, FK
+        bool helpful
+    }
+    USER_ACCOUNT {
+        uuid id PK
+        string login UK
+        string password_hash
+        uuid invited_by FK
+        timestamp last_login
+    }
+    ROLE {
+        uuid id PK
+        string name UK
+    }
+    USER_ROLE {
+        uuid user_id PK, FK
+        uuid role_id PK, FK
+    }
+    AUDIT_LOG {
+        bigint id PK
+        uuid user_id FK
+        string action
+        json payload
+        timestamp at
+    }
+    API_KEY {
+        uuid id PK
+        uuid user_id FK
+        string prefix UK
+        string hash
+        timestamp expires_at
+    }
