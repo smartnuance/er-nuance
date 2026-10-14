@@ -262,7 +262,9 @@ impl Scene {
                     GROUP_HEADER_H + GROUP_SUB_H + lines as f32 * GROUP_LIST_ROW + PAD,
                 );
                 GrpState {
-                    expanded: saved.and_then(|s| s.groups.get(&g.name)).is_some_and(|s| s.open),
+                    expanded: saved
+                        .and_then(|s| s.groups.get(&g.name))
+                        .is_some_and(|s| s.open),
                     pos: Pos2::ZERO,
                     shown: Pos2::ZERO,
                     collapsed,
@@ -275,7 +277,16 @@ impl Scene {
 
         let show_descriptions = saved.is_some_and(|s| s.descriptions);
         let fields_visible = !saved.is_some_and(|s| s.fields_hidden);
-        let mut scene = Self { diagram, grouping, mode, ents, grps, show_descriptions, fields_visible, diff };
+        let mut scene = Self {
+            diagram,
+            grouping,
+            mode,
+            ents,
+            grps,
+            show_descriptions,
+            fields_visible,
+            diff,
+        };
         scene.place(saved);
         scene
     }
@@ -310,7 +321,8 @@ impl Scene {
         }
 
         let nodes = self.top_nodes();
-        let index: HashMap<NodeRef, usize> = nodes.iter().enumerate().map(|(i, &n)| (n, i)).collect();
+        let index: HashMap<NodeRef, usize> =
+            nodes.iter().enumerate().map(|(i, &n)| (n, i)).collect();
         let mut known = Vec::with_capacity(nodes.len());
         let mut sizes = Vec::with_capacity(nodes.len());
         let mut offsets = Vec::with_capacity(nodes.len());
@@ -385,12 +397,16 @@ impl Scene {
 
     /// Diff status of entity `e` (`Same` outside diff mode).
     pub fn entity_status(&self, e: usize) -> Status {
-        self.diff.as_ref().map_or(Status::Same, |d| d.entities[e].status)
+        self.diff
+            .as_ref()
+            .map_or(Status::Same, |d| d.entities[e].status)
     }
 
     /// Diff status of relationship `r` (`Same` outside diff mode).
     pub fn rel_status(&self, r: usize) -> Status {
-        self.diff.as_ref().map_or(Status::Same, |d| d.relationships[r].status)
+        self.diff
+            .as_ref()
+            .map_or(Status::Same, |d| d.relationships[r].status)
     }
 
     pub fn group_of(&self, e: usize) -> Option<usize> {
@@ -400,7 +416,11 @@ impl Scene {
     pub fn top_nodes(&self) -> Vec<NodeRef> {
         (0..self.grps.len())
             .map(NodeRef::Group)
-            .chain((0..self.ents.len()).filter(|&e| self.group_of(e).is_none()).map(NodeRef::Entity))
+            .chain(
+                (0..self.ents.len())
+                    .filter(|&e| self.group_of(e).is_none())
+                    .map(NodeRef::Entity),
+            )
             .collect()
     }
 
@@ -425,10 +445,20 @@ impl Scene {
 
     /// Visible nodes in back-to-front paint order.
     pub fn paint_order(&self) -> Vec<NodeRef> {
-        let mut v: Vec<NodeRef> =
-            (0..self.grps.len()).filter(|&g| self.grps[g].expanded).map(NodeRef::Group).collect();
-        v.extend((0..self.grps.len()).filter(|&g| !self.grps[g].expanded).map(NodeRef::Group));
-        v.extend((0..self.ents.len()).filter(|&e| self.is_visible(NodeRef::Entity(e))).map(NodeRef::Entity));
+        let mut v: Vec<NodeRef> = (0..self.grps.len())
+            .filter(|&g| self.grps[g].expanded)
+            .map(NodeRef::Group)
+            .collect();
+        v.extend(
+            (0..self.grps.len())
+                .filter(|&g| !self.grps[g].expanded)
+                .map(NodeRef::Group),
+        );
+        v.extend(
+            (0..self.ents.len())
+                .filter(|&e| self.is_visible(NodeRef::Entity(e)))
+                .map(NodeRef::Entity),
+        );
         v
     }
 
@@ -445,7 +475,11 @@ impl Scene {
                 Some(&i) => out[i].rels.push(ri),
                 None => {
                     index.insert(key, out.len());
-                    out.push(VisEdge { a, b, rels: vec![ri] });
+                    out.push(VisEdge {
+                        a,
+                        b,
+                        rels: vec![ri],
+                    });
                 }
             }
         }
@@ -486,7 +520,11 @@ impl Scene {
 
     pub fn entity_size(&self, e: usize) -> Vec2 {
         let s = &self.ents[e];
-        let base = if self.fields_shown(e) { s.geom.expanded } else { s.geom.collapsed };
+        let base = if self.fields_shown(e) {
+            s.geom.expanded
+        } else {
+            s.geom.collapsed
+        };
         match self.desc_block_h(e) {
             0.0 => base,
             h => vec2(base.x.max(DESC_W), base.y + h),
@@ -512,7 +550,11 @@ impl Scene {
 
     /// Height of the description block currently shown in entity `e`.
     pub fn desc_block_h(&self, e: usize) -> f32 {
-        if self.show_descriptions { self.ents[e].geom.desc_h } else { 0.0 }
+        if self.show_descriptions {
+            self.ents[e].geom.desc_h
+        } else {
+            0.0
+        }
     }
 
     pub fn has_descriptions(&self) -> bool {
@@ -541,7 +583,11 @@ impl Scene {
     }
 
     fn group_pos(&self, g: usize, w: Which) -> Pos2 {
-        if w == Which::Target { self.grps[g].pos } else { self.grps[g].shown }
+        if w == Which::Target {
+            self.grps[g].pos
+        } else {
+            self.grps[g].shown
+        }
     }
 
     pub fn entity_rect(&self, e: usize, w: Which) -> Rect {
@@ -574,7 +620,9 @@ impl Scene {
     }
 
     pub fn bounds(&self, w: Which) -> Rect {
-        self.top_nodes().into_iter().fold(Rect::NOTHING, |r, n| r.union(self.node_rect(n, w)))
+        self.top_nodes()
+            .into_iter()
+            .fold(Rect::NOTHING, |r, n| r.union(self.node_rect(n, w)))
     }
 
     /// Topmost node under a world-space point.
@@ -708,7 +756,8 @@ impl Scene {
     /// Re-runs the top-level layout using current sizes but keeps group interiors.
     fn relayout_top_keep_inner(&mut self) {
         let nodes = self.top_nodes();
-        let index: HashMap<NodeRef, usize> = nodes.iter().enumerate().map(|(i, &n)| (n, i)).collect();
+        let index: HashMap<NodeRef, usize> =
+            nodes.iter().enumerate().map(|(i, &n)| (n, i)).collect();
         let mut sizes = Vec::new();
         let mut offsets = Vec::new();
         for &n in &nodes {
@@ -745,7 +794,10 @@ impl Scene {
     /// Removes top-level overlaps, keeping `pinned` in place. Returns the nodes that moved.
     fn resolve_top(&mut self, pinned: Option<NodeRef>) -> Vec<(NodeRef, Pos2, Pos2)> {
         let nodes = self.top_nodes();
-        let rects: Vec<Rect> = nodes.iter().map(|&n| self.node_rect(n, Which::Target)).collect();
+        let rects: Vec<Rect> = nodes
+            .iter()
+            .map(|&n| self.node_rect(n, Which::Target))
+            .collect();
         let mut centers: Vec<Pos2> = rects.iter().map(Rect::center).collect();
         let sizes: Vec<Vec2> = rects.iter().map(Rect::size).collect();
         let pin: Vec<bool> = nodes.iter().map(|&n| Some(n) == pinned).collect();
@@ -770,14 +822,32 @@ impl Scene {
                 .groups
                 .iter()
                 .zip(&self.grps)
-                .map(|(g, s)| (g.name.clone(), SavedNode { open: s.expanded, x: s.pos.x, y: s.pos.y }))
+                .map(|(g, s)| {
+                    (
+                        g.name.clone(),
+                        SavedNode {
+                            open: s.expanded,
+                            x: s.pos.x,
+                            y: s.pos.y,
+                        },
+                    )
+                })
                 .collect(),
             entities: self
                 .diagram
                 .entities
                 .iter()
                 .zip(&self.ents)
-                .map(|(e, s)| (e.id.clone(), SavedNode { open: s.show_fields, x: s.pos.x, y: s.pos.y }))
+                .map(|(e, s)| {
+                    (
+                        e.id.clone(),
+                        SavedNode {
+                            open: s.show_fields,
+                            x: s.pos.x,
+                            y: s.pos.y,
+                        },
+                    )
+                })
                 .collect(),
             camera: Some(camera),
             descriptions: self.show_descriptions,
@@ -801,8 +871,16 @@ pub fn group_tags(d: &Diagram, members: &[usize]) -> Vec<usize> {
 
 fn entity_geom(e: &crate::model::Entity, d: Option<&EntityDiff>, m: &dyn Measure) -> EntityGeom {
     let title_w = m.width(e.display_name(), Font::Name);
-    let tag_w: Vec<f32> = e.tags.iter().map(|t| m.width(t, Font::Small) + 2.0 * TAG_PAD).collect();
-    let tags_w = if tag_w.is_empty() { 0.0 } else { TAG_AFTER_NAME + tag_w.iter().map(|w| w + TAG_GAP).sum::<f32>() - TAG_GAP };
+    let tag_w: Vec<f32> = e
+        .tags
+        .iter()
+        .map(|t| m.width(t, Font::Small) + 2.0 * TAG_PAD)
+        .collect();
+    let tags_w = if tag_w.is_empty() {
+        0.0
+    } else {
+        TAG_AFTER_NAME + tag_w.iter().map(|w| w + TAG_GAP).sum::<f32>() - TAG_GAP
+    };
     let name_w = title_w + tags_w;
     let n = e.attributes.len();
     // Right of the name: the field count, with the diff sign before it (or the sign alone).
@@ -821,11 +899,22 @@ fn entity_geom(e: &crate::model::Entity, d: Option<&EntityDiff>, m: &dyn Measure
         None => 0.0,
     };
     if n == 0 {
-        return EntityGeom { collapsed, expanded: collapsed, desc_h, title_w, tag_w, ..Default::default() };
+        return EntityGeom {
+            collapsed,
+            expanded: collapsed,
+            desc_h,
+            title_w,
+            tag_w,
+            ..Default::default()
+        };
     }
     let attr_diff = |i: usize| d.map(|d| &d.attrs[i]);
     let max = |f: &dyn Fn(usize, &crate::model::Attribute) -> String| {
-        e.attributes.iter().enumerate().map(|(i, a)| m.width(&f(i, a), Font::Field)).fold(0.0, f32::max)
+        e.attributes
+            .iter()
+            .enumerate()
+            .map(|(i, a)| m.width(&f(i, a), Font::Field))
+            .fold(0.0, f32::max)
     };
     let type_w = max(&|i, a| diff::type_text(a, attr_diff(i)));
     let fname_w = max(&|_, a| a.name.clone());
@@ -898,8 +987,15 @@ string name }
     }
 
     fn no_top_overlap(s: &Scene) -> bool {
-        let rects: Vec<Rect> = s.top_nodes().iter().map(|&n| s.node_rect(n, Which::Target)).collect();
-        rects.iter().enumerate().all(|(i, a)| rects[i + 1..].iter().all(|b| !a.intersects(*b)))
+        let rects: Vec<Rect> = s
+            .top_nodes()
+            .iter()
+            .map(|&n| s.node_rect(n, Which::Target))
+            .collect();
+        rects
+            .iter()
+            .enumerate()
+            .all(|(i, a)| rects[i + 1..].iter().all(|b| !a.intersects(*b)))
     }
 
     #[test]
@@ -918,8 +1014,16 @@ string name }
         let mut s = scene();
         s.set_group_expanded(0, true);
         let edges = s.visible_edges();
-        assert!(edges.iter().any(|e| e.a == NodeRef::Entity(0) && e.b == NodeRef::Entity(1)));
-        assert!(edges.iter().any(|e| (e.a, e.b) == (NodeRef::Entity(2), NodeRef::Group(1))));
+        assert!(
+            edges
+                .iter()
+                .any(|e| e.a == NodeRef::Entity(0) && e.b == NodeRef::Entity(1))
+        );
+        assert!(
+            edges
+                .iter()
+                .any(|e| (e.a, e.b) == (NodeRef::Entity(2), NodeRef::Group(1)))
+        );
         assert!(no_top_overlap(&s));
         s.set_fields(&[0], true);
         assert!(no_top_overlap(&s));
@@ -948,7 +1052,9 @@ string name }
         s.set_fields(&[0], true);
         s.snap();
         let r = s.entity_rect(0, Which::Shown);
-        let h = s.hit_test(pos2(r.center().x, r.min.y + HEADER_H + ROW_H * 1.5)).unwrap();
+        let h = s
+            .hit_test(pos2(r.center().x, r.min.y + HEADER_H + ROW_H * 1.5))
+            .unwrap();
         assert_eq!(h.node, NodeRef::Entity(0));
         assert_eq!(h.field, Some(1));
         let h = s.hit_test(pos2(r.center().x, r.min.y + 2.0)).unwrap();
@@ -975,11 +1081,18 @@ string name }
         let mut s = Scene::new(d, mode, None, &CharMeasure);
         let elapsed = t.elapsed();
         assert_eq!(mode, GroupingMode::Clusters);
-        assert!((15..=60).contains(&s.grps.len()), "{} clusters", s.grps.len());
+        assert!(
+            (15..=60).contains(&s.grps.len()),
+            "{} clusters",
+            s.grps.len()
+        );
         assert!(no_top_overlap(&s));
         s.set_all_groups_expanded(true);
         assert!(no_top_overlap(&s));
-        eprintln!("400 entities: {} clusters, built in {elapsed:?}", s.grps.len());
+        eprintln!(
+            "400 entities: {} clusters, built in {elapsed:?}",
+            s.grps.len()
+        );
         assert!(elapsed.as_secs_f32() < 5.0);
     }
 
@@ -988,7 +1101,11 @@ string name }
         let d = parse(include_str!("../examples/commerce.mmd"));
         let g = grouping::compute(&d, GroupingMode::Clusters);
         for grp in &g.groups {
-            let names: Vec<&str> = grp.members.iter().map(|&e| d.entities[e].id.as_str()).collect();
+            let names: Vec<&str> = grp
+                .members
+                .iter()
+                .map(|&e| d.entities[e].id.as_str())
+                .collect();
             eprintln!("{}: {}", grp.name, names.join(", "));
         }
         assert!(g.groups.len() >= 4);
@@ -1000,13 +1117,18 @@ string name }
         assert!(d.warnings.is_empty(), "{:?}", d.warnings);
         assert_eq!(d.tags, ["pii", "append-only", "ledger", "derived"]);
         let g = grouping::compute(&d, GroupingMode::File);
-        let loose: Vec<&str> = (0..d.entities.len()).filter(|&e| g.group_of[e].is_none()).map(|e| d.entities[e].id.as_str()).collect();
+        let loose: Vec<&str> = (0..d.entities.len())
+            .filter(|&e| g.group_of[e].is_none())
+            .map(|e| d.entities[e].id.as_str())
+            .collect();
         assert_eq!(loose, ["CURRENCY", "COUNTRY"]);
     }
 
     #[test]
     fn descriptions_take_layout_space_when_shown() {
-        let src = format!("{SRC}%% describe CUSTOMER: A person who buys things, described at some length so it wraps.\n");
+        let src = format!(
+            "{SRC}%% describe CUSTOMER: A person who buys things, described at some length so it wraps.\n"
+        );
         let mut s = Scene::new(parse(&src), GroupingMode::File, None, &CharMeasure);
         s.set_group_expanded(0, true);
         s.set_fields(&[0], true);
@@ -1014,7 +1136,11 @@ string name }
         s.set_descriptions(true);
         let after = s.entity_size(0);
         assert!(after.y > before.y && after.x >= DESC_W);
-        assert_eq!(s.entity_size(1), s.ents[1].geom.collapsed, "no description, no change");
+        assert_eq!(
+            s.entity_size(1),
+            s.ents[1].geom.collapsed,
+            "no description, no change"
+        );
         assert!(no_top_overlap(&s));
         s.snap();
         let r = s.entity_rect(0, Which::Shown);
@@ -1035,18 +1161,27 @@ string name }
         let row2 = r.min.y + HEADER_H + 3.0 + g.rows[0] + g.rows[1] + ROW_H * 0.5;
         assert_eq!(s.hit_test(pos2(r.center().x, row2)).unwrap().field, Some(2));
         let options_line = r.min.y + HEADER_H + 3.0 + ROW_H + 2.0;
-        assert_eq!(s.hit_test(pos2(r.center().x, options_line)).unwrap().field, Some(0));
+        assert_eq!(
+            s.hit_test(pos2(r.center().x, options_line)).unwrap().field,
+            Some(0)
+        );
     }
 
     #[test]
     fn tag_chips_widen_the_header_and_groups_expand_selectively() {
-        let src = format!("{SRC}%% describe CUSTOMER: #vip #pii Buys things.\n%% describe PRODUCT: #pii\n");
+        let src = format!(
+            "{SRC}%% describe CUSTOMER: #vip #pii Buys things.\n%% describe PRODUCT: #pii\n"
+        );
         let mut s = Scene::new(parse(&src), GroupingMode::File, None, &CharMeasure);
         let plain = Scene::new(parse(SRC), GroupingMode::File, None, &CharMeasure);
         let g = &s.ents[0].geom;
         assert_eq!(g.tag_w.len(), 2);
         assert!(g.collapsed.x >= plain.ents[0].geom.collapsed.x + g.tag_w.iter().sum::<f32>());
-        assert_eq!(group_tags(&s.diagram, &s.grouping.groups[1].members), [1], "Catalog carries #pii");
+        assert_eq!(
+            group_tags(&s.diagram, &s.grouping.groups[1].members),
+            [1],
+            "Catalog carries #pii"
+        );
         s.set_groups_expanded(&[false, true]);
         assert!(!s.grps[0].expanded && s.grps[1].expanded);
         assert!(no_top_overlap(&s));

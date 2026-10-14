@@ -11,6 +11,8 @@
     Navigate and diff large Mermaid ER diagrams
     <br />
     <br />
+    <a href="https://er.smartnuance.com"><strong>Open in browser</strong></a>
+    ·
     <a href="#install"><strong>Install</strong></a>
     ·
     <a href="#diff-mode">Diff mode</a>
@@ -33,8 +35,13 @@ puts them back.
 
 ```sh
 ernuance path/to/schema.mmd   # or .md with ```mermaid blocks
-ernuance                      # then File → Open, drag & drop, or "Load example"
+ernuance                      # then File → Open, drag & drop, Paste diagram, or "Load example"
 ```
+
+On macOS the menus live in the system menu bar; elsewhere they are drawn in the window.
+
+The file is reloaded automatically when it changes. The positions and open/closed state are
+saved next to it as `<file>.layout.json`.
 
 ## Install
 
@@ -65,10 +72,27 @@ sudo apt install build-essential libxkbcommon-dev libwayland-dev libx11-dev libx
 
 No `git` binary, libgit2 or GTK is needed at runtime.
 
-On macOS the menus live in the system menu bar; elsewhere they are drawn in the window.
+## Web version
 
-The file is reloaded automatically when it changes. The positions and open/closed state are
-saved next to it as `<file>.layout.json`.
+ER Nuance also runs in the browser at **[er.smartnuance.com](https://er.smartnuance.com)**. Open,
+drop or paste a diagram, or compare two files; everything happens in your browser and nothing is
+uploaded. Layouts are remembered in the browser per file name. Git comparisons, reload and file
+watching are desktop-only.
+
+Run it locally with `cargo make web-serve` (needs `rustup target add wasm32-unknown-unknown` and
+[trunk](https://trunkrs.dev)).
+
+### Deploying
+
+The image is a static nginx site (`Dockerfile`), the manifests are in `k8s/`.
+
+1. `cargo make web-push` builds `ghcr.io/smartnuance/er-nuance:<version>` (linux/amd64) and pushes it.
+   The ghcr package is public, so the cluster needs no pull secret.
+2. `cargo make web-deploy` sets that version in `k8s/deployment.yaml` and applies `k8s/` to the
+   `contentnuance` cluster.
+
+One-time: a DNS A record for `er.smartnuance.com` pointing at the cluster's ingress load balancer.
+cert-manager issues the TLS certificate on first deploy.
 
 ## Groups
 

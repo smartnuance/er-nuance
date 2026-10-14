@@ -12,9 +12,22 @@ pub fn job(text: &str, size: f32, color: Color32, accent: Color32, wrap: f32) ->
         if buf.is_empty() {
             return;
         }
-        let font_id = if code { FontId::monospace(size * 0.92) } else { FontId::proportional(size) };
+        let font_id = if code {
+            FontId::monospace(size * 0.92)
+        } else {
+            FontId::proportional(size)
+        };
         let color = if code || strong { accent } else { color };
-        job.append(buf, 0.0, TextFormat { font_id, color, italics: italic, ..Default::default() });
+        job.append(
+            buf,
+            0.0,
+            TextFormat {
+                font_id,
+                color,
+                italics: italic,
+                ..Default::default()
+            },
+        );
         buf.clear();
     };
     let mut chars = text.chars().peekable();
@@ -56,7 +69,10 @@ mod tests {
         assert_eq!(j.text, "a b c d");
         assert_eq!(j.sections.len(), 6);
         assert!(j.sections[1].format.italics);
-        assert_eq!(j.sections[3].format.font_id.family, egui::FontFamily::Monospace);
+        assert_eq!(
+            j.sections[3].format.font_id.family,
+            egui::FontFamily::Monospace
+        );
         assert_eq!(j.sections[5].format.color, Color32::RED);
     }
 }

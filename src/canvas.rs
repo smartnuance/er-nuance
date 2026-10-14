@@ -10,8 +10,8 @@ use egui::{
 use crate::diff::{self, Status};
 use crate::model::Cardinality;
 use crate::scene::{
-    Font, GROUP_HEADER_H, GROUP_LIST_MAX, GROUP_LIST_ROW, GROUP_SUB_H, HEADER_H, NodeRef, PAD,
-    ROW_H, Scene, VisEdge, Which, COL_GAP, DESC_PAD, DESC_W, TAG_AFTER_NAME, TAG_DOT, TAG_GAP,
+    COL_GAP, DESC_PAD, DESC_W, Font, GROUP_HEADER_H, GROUP_LIST_MAX, GROUP_LIST_ROW, GROUP_SUB_H,
+    HEADER_H, NodeRef, PAD, ROW_H, Scene, TAG_AFTER_NAME, TAG_DOT, TAG_GAP, VisEdge, Which,
     group_tags,
 };
 
@@ -38,7 +38,10 @@ pub struct Camera {
 
 impl Default for Camera {
     fn default() -> Self {
-        Self { offset: Vec2::ZERO, zoom: 1.0 }
+        Self {
+            offset: Vec2::ZERO,
+            zoom: 1.0,
+        }
     }
 }
 
@@ -61,11 +64,17 @@ impl Camera {
             .min(canvas.height() / world.height().max(1.0))
             * 0.92;
         let zoom = zoom.clamp(0.05, max_zoom);
-        Self { zoom, offset: canvas.size() * 0.5 - world.center().to_vec2() * zoom }
+        Self {
+            zoom,
+            offset: canvas.size() * 0.5 - world.center().to_vec2() * zoom,
+        }
     }
 
     pub fn centered_on(canvas: Rect, p: Pos2, zoom: f32) -> Self {
-        Self { zoom, offset: canvas.size() * 0.5 - p.to_vec2() * zoom }
+        Self {
+            zoom,
+            offset: canvas.size() * 0.5 - p.to_vec2() * zoom,
+        }
     }
 
     pub fn zoom_around(&mut self, canvas: Rect, screen: Pos2, factor: f32) {
@@ -75,7 +84,10 @@ impl Camera {
     }
 
     pub fn lerp(&self, to: &Self, t: f32) -> Self {
-        Self { offset: self.offset + (to.offset - self.offset) * t, zoom: self.zoom + (to.zoom - self.zoom) * t }
+        Self {
+            offset: self.offset + (to.offset - self.offset) * t,
+            zoom: self.zoom + (to.zoom - self.zoom) * t,
+        }
     }
 }
 
@@ -154,11 +166,19 @@ impl Palette {
     }
 
     pub fn group(&self, hue: f32) -> Color32 {
-        if self.dark { Hsva::new(hue, 0.45, 0.62, 1.0).into() } else { Hsva::new(hue, 0.45, 0.72, 1.0).into() }
+        if self.dark {
+            Hsva::new(hue, 0.45, 0.62, 1.0).into()
+        } else {
+            Hsva::new(hue, 0.45, 0.72, 1.0).into()
+        }
     }
 
     pub fn group_header(&self, hue: f32) -> Color32 {
-        if self.dark { Hsva::new(hue, 0.5, 0.42, 1.0).into() } else { Hsva::new(hue, 0.22, 0.93, 1.0).into() }
+        if self.dark {
+            Hsva::new(hue, 0.5, 0.42, 1.0).into()
+        } else {
+            Hsva::new(hue, 0.22, 0.93, 1.0).into()
+        }
     }
 
     pub fn group_tint(&self, hue: f32) -> Color32 {
@@ -183,7 +203,13 @@ impl Palette {
                 let [r, g, b] = if self.dark { *d } else { *l };
                 Color32::from_rgb(r, g, b)
             }
-            None => Hsva::new((index as f32 * 0.618_034 + 0.1).fract(), 0.6, if self.dark { 0.9 } else { 0.6 }, 1.0).into(),
+            None => Hsva::new(
+                (index as f32 * 0.618_034 + 0.1).fract(),
+                0.6,
+                if self.dark { 0.9 } else { 0.6 },
+                1.0,
+            )
+            .into(),
         }
     }
 
@@ -193,7 +219,11 @@ impl Palette {
     }
 
     pub fn ungrouped_header(&self) -> Color32 {
-        if self.dark { Color32::from_rgb(0x3a, 0x3d, 0x45) } else { Color32::from_rgb(0xe6, 0xe7, 0xea) }
+        if self.dark {
+            Color32::from_rgb(0x3a, 0x3d, 0x45)
+        } else {
+            Color32::from_rgb(0xe6, 0xe7, 0xea)
+        }
     }
 }
 
@@ -237,8 +267,13 @@ impl Canvas<'_> {
         if size < 4.0 {
             return;
         }
-        let family = if font.monospace() { FontFamily::Monospace } else { FontFamily::Proportional };
-        self.painter.text(pos, anchor, text, FontId::new(size, family), color);
+        let family = if font.monospace() {
+            FontFamily::Monospace
+        } else {
+            FontFamily::Proportional
+        };
+        self.painter
+            .text(pos, anchor, text, FontId::new(size, family), color);
     }
 
     fn radius(&self, r: f32) -> CornerRadius {
@@ -289,17 +324,35 @@ impl Canvas<'_> {
         let st = &scene.grps[g];
         let color = self.pal.group(st.hue);
         let stroke = self.outline(NodeRef::Group(g), Stroke::new(1.5, color), false);
-        self.painter.rect(r, self.radius(10.0), self.pal.group_tint(st.hue), stroke, StrokeKind::Inside);
+        self.painter.rect(
+            r,
+            self.radius(10.0),
+            self.pal.group_tint(st.hue),
+            stroke,
+            StrokeKind::Inside,
+        );
         let z = self.z();
         let cy = r.min.y + GROUP_HEADER_H * 0.5 * z;
         self.triangle(pos2(r.min.x + (PAD + 5.0) * z, cy), true, color);
         let name = &scene.grouping.groups[g].name;
-        self.text(pos2(r.min.x + (PAD + 16.0) * z, cy), Align2::LEFT_CENTER, name, Font::Title, color);
+        self.text(
+            pos2(r.min.x + (PAD + 16.0) * z, cy),
+            Align2::LEFT_CENTER,
+            name,
+            Font::Title,
+            color,
+        );
         let members = &scene.grouping.groups[g].members;
         let count = format!("{} entities", members.len());
         let right = pos2(r.max.x - PAD * z, cy);
         let count_w = self.text_width(&count, Font::Small);
-        self.text(right, Align2::RIGHT_CENTER, &count, Font::Small, self.pal.muted);
+        self.text(
+            right,
+            Align2::RIGHT_CENTER,
+            &count,
+            Font::Small,
+            self.pal.muted,
+        );
         self.diff_badge(scene, members, right - vec2(count_w + 8.0 * z, 0.0));
     }
 
@@ -308,8 +361,15 @@ impl Canvas<'_> {
         if size < 4.0 {
             return 0.0;
         }
-        let family = if font.monospace() { FontFamily::Monospace } else { FontFamily::Proportional };
-        self.painter.layout_no_wrap(text.to_owned(), FontId::new(size, family), Color32::WHITE).size().x
+        let family = if font.monospace() {
+            FontFamily::Monospace
+        } else {
+            FontFamily::Proportional
+        };
+        self.painter
+            .layout_no_wrap(text.to_owned(), FontId::new(size, family), Color32::WHITE)
+            .size()
+            .x
     }
 
     /// `+a −r ~c` for the given entities on a dark pill, right-aligned at `right`.
@@ -321,15 +381,29 @@ impl Canvas<'_> {
         }
         let z = self.z();
         let w = self.text_width(&c.badge(), Font::Small) + 5.0 * z;
-        let pill = Rect::from_min_max(pos2(right.x - w - 2.0 * z, right.y - 9.0 * z), pos2(right.x + 5.0 * z, right.y + 9.0 * z));
-        self.painter.rect_filled(pill, self.radius(9.0), self.pal.bg);
+        let pill = Rect::from_min_max(
+            pos2(right.x - w - 2.0 * z, right.y - 9.0 * z),
+            pos2(right.x + 5.0 * z, right.y + 9.0 * z),
+        );
+        self.painter
+            .rect_filled(pill, self.radius(9.0), self.pal.bg);
         let mut x = right.x;
-        for (sign, n, color) in [("~", c.changed, self.pal.changed), ("−", c.removed, self.pal.removed), ("+", c.added, self.pal.added)] {
+        for (sign, n, color) in [
+            ("~", c.changed, self.pal.changed),
+            ("−", c.removed, self.pal.removed),
+            ("+", c.added, self.pal.added),
+        ] {
             if n == 0 {
                 continue;
             }
             let t = format!("{sign}{n}");
-            self.text(pos2(x, right.y), Align2::RIGHT_CENTER, &t, Font::Small, color);
+            self.text(
+                pos2(x, right.y),
+                Align2::RIGHT_CENTER,
+                &t,
+                Font::Small,
+                color,
+            );
             x -= self.text_width(&t, Font::Small) + 5.0 * self.z();
         }
     }
@@ -343,23 +417,54 @@ impl Canvas<'_> {
         let st = &scene.grps[g];
         let color = self.pal.group(st.hue);
         let members = &scene.grouping.groups[g].members;
-        let hits = members.iter().filter(|e| self.hl.search.contains(e)).count();
+        let hits = members
+            .iter()
+            .filter(|e| self.hl.search.contains(e))
+            .count();
 
         // Stacked cards hint that this box contains several entities.
         for k in [2.0, 1.0] {
             let back = r.translate(vec2(5.0, 5.0) * k * z);
-            self.painter.rect(back, self.radius(8.0), self.pal.ent_fill, Stroke::new(1.0, color.gamma_multiply(0.6)), StrokeKind::Inside);
+            self.painter.rect(
+                back,
+                self.radius(8.0),
+                self.pal.ent_fill,
+                Stroke::new(1.0, color.gamma_multiply(0.6)),
+                StrokeKind::Inside,
+            );
         }
         let stroke = self.outline(NodeRef::Group(g), Stroke::new(1.8, color), hits > 0);
-        self.painter.rect(r, self.radius(8.0), self.pal.ent_fill, Stroke::NONE, StrokeKind::Inside);
+        self.painter.rect(
+            r,
+            self.radius(8.0),
+            self.pal.ent_fill,
+            Stroke::NONE,
+            StrokeKind::Inside,
+        );
         let header = Rect::from_min_max(r.min, pos2(r.max.x, r.min.y + GROUP_HEADER_H * z));
         let rr = (8.0 * z).clamp(0.0, 255.0) as u8;
-        self.painter.rect_filled(header, CornerRadius { nw: rr, ne: rr, sw: 0, se: 0 }, self.pal.group_header(st.hue));
-        self.painter.rect_stroke(r, self.radius(8.0), stroke, StrokeKind::Inside);
+        self.painter.rect_filled(
+            header,
+            CornerRadius {
+                nw: rr,
+                ne: rr,
+                sw: 0,
+                se: 0,
+            },
+            self.pal.group_header(st.hue),
+        );
+        self.painter
+            .rect_stroke(r, self.radius(8.0), stroke, StrokeKind::Inside);
 
         let cy = header.center().y;
         self.triangle(pos2(r.min.x + (PAD + 5.0) * z, cy), false, self.pal.text);
-        self.text(pos2(r.min.x + (PAD + 16.0) * z, cy), Align2::LEFT_CENTER, &scene.grouping.groups[g].name, Font::Title, self.pal.text);
+        self.text(
+            pos2(r.min.x + (PAD + 16.0) * z, cy),
+            Align2::LEFT_CENTER,
+            &scene.grouping.groups[g].name,
+            Font::Title,
+            self.pal.text,
+        );
         // One dot per tag among the members, filled when highlighted.
         let mut x = r.min.x + (PAD + 16.0 + st.title_w + 6.0 + TAG_DOT * 0.5) * z;
         for t in group_tags(&scene.diagram, members) {
@@ -367,7 +472,12 @@ impl Canvas<'_> {
             if self.hl.tags.contains(&t) {
                 self.painter.circle_filled(pos2(x, cy), 4.0 * z, c);
             } else {
-                self.painter.circle(pos2(x, cy), 3.2 * z, self.pal.ent_fill, Stroke::new(1.5 * z, c));
+                self.painter.circle(
+                    pos2(x, cy),
+                    3.2 * z,
+                    self.pal.ent_fill,
+                    Stroke::new(1.5 * z, c),
+                );
             }
             x += TAG_DOT * z;
         }
@@ -379,25 +489,50 @@ impl Canvas<'_> {
             sub = format!("{sub} · {hits} match");
         }
         let sub_y = header.max.y + GROUP_SUB_H * 0.5 * z + 2.0 * z;
-        self.text(pos2(r.min.x + PAD * z, sub_y), Align2::LEFT_CENTER, &sub, Font::Small, self.pal.muted);
+        self.text(
+            pos2(r.min.x + PAD * z, sub_y),
+            Align2::LEFT_CENTER,
+            &sub,
+            Font::Small,
+            self.pal.muted,
+        );
 
         let mut y = header.max.y + (GROUP_SUB_H + 4.0 + GROUP_LIST_ROW * 0.5) * z;
         // Show search matches, then changes, first so they are never cut off.
-        let rank = |e: &usize| (!self.hl.search.contains(e), !scene.entity_status(*e).differs());
+        let rank = |e: &usize| {
+            (
+                !self.hl.search.contains(e),
+                !scene.entity_status(*e).differs(),
+            )
+        };
         let mut list: Vec<usize> = members.clone();
         list.sort_by_key(rank);
         for &e in list.iter().take(GROUP_LIST_MAX) {
             let c = if self.hl.search.contains(&e) {
                 self.pal.search
             } else {
-                self.pal.status(scene.entity_status(e)).unwrap_or(self.pal.text)
+                self.pal
+                    .status(scene.entity_status(e))
+                    .unwrap_or(self.pal.text)
             };
-            self.text(pos2(r.min.x + (PAD + 6.0) * z, y), Align2::LEFT_CENTER, scene.diagram.entities[e].display_name(), Font::Small, c);
+            self.text(
+                pos2(r.min.x + (PAD + 6.0) * z, y),
+                Align2::LEFT_CENTER,
+                scene.diagram.entities[e].display_name(),
+                Font::Small,
+                c,
+            );
             y += GROUP_LIST_ROW * z;
         }
         if members.len() > GROUP_LIST_MAX {
             let more = format!("+ {} more", members.len() - GROUP_LIST_MAX);
-            self.text(pos2(r.min.x + (PAD + 6.0) * z, y), Align2::LEFT_CENTER, &more, Font::Small, self.pal.muted);
+            self.text(
+                pos2(r.min.x + (PAD + 6.0) * z, y),
+                Align2::LEFT_CENTER,
+                &more,
+                Font::Small,
+                self.pal.muted,
+            );
         }
     }
 
@@ -410,7 +545,11 @@ impl Canvas<'_> {
         if status == Status::Removed {
             let mut faded = self.painter.clone();
             faded.multiply_opacity(0.55);
-            return Canvas { painter: &faded, ..*self }.entity_box(scene, e, r, status);
+            return Canvas {
+                painter: &faded,
+                ..*self
+            }
+            .entity_box(scene, e, r, status);
         }
         self.entity_box(scene, e, r, status);
     }
@@ -418,7 +557,10 @@ impl Canvas<'_> {
     fn entity_box(&self, scene: &Scene, e: usize, r: Rect, status: Status) {
         let z = self.z();
         let header_color = match (self.pal.status(status), scene.group_of(e)) {
-            (Some(c), _) => self.pal.ent_fill.lerp_to_gamma(c, if self.pal.dark { 0.42 } else { 0.3 }),
+            (Some(c), _) => self
+                .pal
+                .ent_fill
+                .lerp_to_gamma(c, if self.pal.dark { 0.42 } else { 0.3 }),
             (None, Some(g)) => self.pal.group_header(scene.grps[g].hue),
             (None, None) => self.pal.ungrouped_header(),
         };
@@ -427,15 +569,37 @@ impl Canvas<'_> {
             None => Stroke::new(1.0, self.pal.ent_stroke),
         };
         let stroke = self.outline(NodeRef::Entity(e), base, self.hl.search.contains(&e));
-        self.painter.rect_filled(r, self.radius(5.0), self.pal.ent_fill);
+        self.painter
+            .rect_filled(r, self.radius(5.0), self.pal.ent_fill);
         let rr = (5.0 * z).clamp(0.0, 255.0) as u8;
         let header = Rect::from_min_max(r.min, pos2(r.max.x, r.min.y + HEADER_H * z));
         let desc_h = scene.desc_block_h(e);
-        let bottom = if scene.fields_shown(e) || desc_h > 0.0 { 0 } else { rr };
-        self.painter.rect_filled(header, CornerRadius { nw: rr, ne: rr, sw: bottom, se: bottom }, header_color);
+        let bottom = if scene.fields_shown(e) || desc_h > 0.0 {
+            0
+        } else {
+            rr
+        };
+        self.painter.rect_filled(
+            header,
+            CornerRadius {
+                nw: rr,
+                ne: rr,
+                sw: bottom,
+                se: bottom,
+            },
+            header_color,
+        );
         // Collapsed boxes with fields show the sign next to the field count instead.
-        if status.differs() && (scene.fields_shown(e) || scene.diagram.entities[e].attributes.is_empty()) {
-            self.text(pos2(r.max.x - PAD * z, header.center().y), Align2::RIGHT_CENTER, status.sign(), Font::Name, self.pal.text);
+        if status.differs()
+            && (scene.fields_shown(e) || scene.diagram.entities[e].attributes.is_empty())
+        {
+            self.text(
+                pos2(r.max.x - PAD * z, header.center().y),
+                Align2::RIGHT_CENTER,
+                status.sign(),
+                Font::Name,
+                self.pal.text,
+            );
         }
         self.tag_chips(scene, e, r, header);
         self.entity_body(scene, e, r, header, desc_h);
@@ -443,10 +607,12 @@ impl Canvas<'_> {
             let w = self.text_width(scene.diagram.entities[e].display_name(), Font::Name);
             let y = header.center().y;
             let x = r.min.x + PAD * z;
-            self.painter.hline(x..=x + w, y, Stroke::new(1.2, self.pal.text));
+            self.painter
+                .hline(x..=x + w, y, Stroke::new(1.2, self.pal.text));
         }
         // The outline goes on top, so fills inside the box cannot cover part of it.
-        self.painter.rect_stroke(r, self.radius(5.0), stroke, StrokeKind::Inside);
+        self.painter
+            .rect_stroke(r, self.radius(5.0), stroke, StrokeKind::Inside);
     }
 
     /// The entity's tags as pills after its name: outlined, or filled when highlighted.
@@ -459,14 +625,28 @@ impl Canvas<'_> {
         let cy = header.center().y;
         let mut x = r.min.x + (PAD + geom.title_w + TAG_AFTER_NAME) * z;
         for (tag, w) in scene.diagram.entities[e].tags.iter().zip(&geom.tag_w) {
-            let Some(t) = scene.diagram.tag_index(tag) else { continue };
+            let Some(t) = scene.diagram.tag_index(tag) else {
+                continue;
+            };
             let c = self.pal.tag(t);
             let chip = Rect::from_min_max(pos2(x, cy - 8.0 * z), pos2(x + w * z, cy + 8.0 * z));
             if self.hl.tags.contains(&t) {
                 self.painter.rect_filled(chip, self.radius(8.0), c);
-                self.text(chip.center(), Align2::CENTER_CENTER, tag, Font::Small, self.pal.tag_text_on_fill());
+                self.text(
+                    chip.center(),
+                    Align2::CENTER_CENTER,
+                    tag,
+                    Font::Small,
+                    self.pal.tag_text_on_fill(),
+                );
             } else {
-                self.painter.rect(chip, self.radius(8.0), self.pal.ent_fill.gamma_multiply(0.85), Stroke::new(1.2, c), StrokeKind::Inside);
+                self.painter.rect(
+                    chip,
+                    self.radius(8.0),
+                    self.pal.ent_fill.gamma_multiply(0.85),
+                    Stroke::new(1.2, c),
+                    StrokeKind::Inside,
+                );
                 self.text(chip.center(), Align2::CENTER_CENTER, tag, Font::Small, c);
             }
             x += (w + TAG_GAP) * z;
@@ -479,31 +659,77 @@ impl Canvas<'_> {
         let st = &scene.ents[e];
         let fields = scene.fields_shown(e);
         let cy = header.center().y;
-        self.text(pos2(r.min.x + PAD * z, cy), Align2::LEFT_CENTER, ent.display_name(), Font::Name, self.pal.text);
+        self.text(
+            pos2(r.min.x + PAD * z, cy),
+            Align2::LEFT_CENTER,
+            ent.display_name(),
+            Font::Name,
+            self.pal.text,
+        );
         if !fields && !ent.attributes.is_empty() {
             let status = scene.entity_status(e);
             let count = match status.sign() {
                 "" => ent.attributes.len().to_string(),
                 sign => format!("{sign} {}", ent.attributes.len()),
             };
-            let color = if status.differs() { self.pal.text } else { self.pal.muted };
-            self.text(pos2(r.max.x - PAD * z, cy), Align2::RIGHT_CENTER, &count, Font::Small, color);
+            let color = if status.differs() {
+                self.pal.text
+            } else {
+                self.pal.muted
+            };
+            self.text(
+                pos2(r.max.x - PAD * z, cy),
+                Align2::RIGHT_CENTER,
+                &count,
+                Font::Small,
+                color,
+            );
         }
         if desc_h > 0.0
             && let Some(text) = &ent.description
         {
-            let block = Rect::from_min_max(header.left_bottom(), pos2(r.max.x, header.max.y + desc_h * z));
+            let block = Rect::from_min_max(
+                header.left_bottom(),
+                pos2(r.max.x, header.max.y + desc_h * z),
+            );
             // Last section of the box when fields are hidden: round its bottom like the box.
-            let rr = if fields { 0 } else { (5.0 * z).clamp(0.0, 255.0) as u8 };
-            self.painter.rect_filled(block, CornerRadius { nw: 0, ne: 0, sw: rr, se: rr }, self.pal.desc_fill);
+            let rr = if fields {
+                0
+            } else {
+                (5.0 * z).clamp(0.0, 255.0) as u8
+            };
+            self.painter.rect_filled(
+                block,
+                CornerRadius {
+                    nw: 0,
+                    ne: 0,
+                    sw: rr,
+                    se: rr,
+                },
+                self.pal.desc_fill,
+            );
             if fields {
-                self.painter.hline(block.x_range(), block.max.y, Stroke::new(1.0, self.pal.ent_stroke));
+                self.painter.hline(
+                    block.x_range(),
+                    block.max.y,
+                    Stroke::new(1.0, self.pal.ent_stroke),
+                );
             }
             if Font::Small.size() * z >= 4.0 {
-                let job = crate::richtext::job(text, Font::Small.size() * z, self.pal.muted, self.pal.text, (DESC_W - 2.0 * PAD) * z);
+                let job = crate::richtext::job(
+                    text,
+                    Font::Small.size() * z,
+                    self.pal.muted,
+                    self.pal.text,
+                    (DESC_W - 2.0 * PAD) * z,
+                );
                 let galley = self.painter.layout_job(job);
                 let clip = block.intersect(self.painter.clip_rect());
-                self.painter.with_clip_rect(clip).galley(pos2(r.min.x + PAD * z, block.min.y + DESC_PAD * z), galley, self.pal.muted);
+                self.painter.with_clip_rect(clip).galley(
+                    pos2(r.min.x + PAD * z, block.min.y + DESC_PAD * z),
+                    galley,
+                    self.pal.muted,
+                );
             }
         }
         if !fields || Font::Field.size() * z < 4.0 {
@@ -516,7 +742,8 @@ impl Canvas<'_> {
         let diffs = scene.diff.as_ref().map(|d| &d.entities[e].attrs);
         for (i, a) in ent.attributes.iter().enumerate() {
             let row_h = st.geom.rows[i] * z;
-            let row = Rect::from_min_max(pos2(r.min.x + 1.0, top), pos2(r.max.x - 1.0, top + row_h));
+            let row =
+                Rect::from_min_max(pos2(r.min.x + 1.0, top), pos2(r.max.x - 1.0, top + row_h));
             if i % 2 == 1 {
                 self.painter.rect_filled(row, 0.0, self.pal.row_alt);
             }
@@ -526,30 +753,64 @@ impl Canvas<'_> {
             let own = row_status.differs() && row_status != scene.entity_status(e);
             if own && let Some(c) = self.pal.status(row_status) {
                 self.painter.rect_filled(row, 0.0, c.gamma_multiply(0.16));
-                self.painter.rect_filled(Rect::from_min_max(row.min, pos2(row.min.x + 3.0 * z, row.max.y)), 0.0, c);
+                self.painter.rect_filled(
+                    Rect::from_min_max(row.min, pos2(row.min.x + 3.0 * z, row.max.y)),
+                    0.0,
+                    c,
+                );
             }
             if let Some(options) = a.enum_options()
                 && Font::Options.size() * z >= 4.0
             {
                 let font = FontId::monospace(Font::Options.size() * z);
-                let galley = self.painter.layout(options, font, self.pal.options, st.geom.options_w * z);
-                let area = Rect::from_min_max(pos2(r.min.x, top + ROW_H * z), pos2(r.max.x, top + row_h));
-                self.painter.with_clip_rect(area.intersect(self.painter.clip_rect())).galley(pos2(x_type, area.min.y), galley, self.pal.options);
+                let galley =
+                    self.painter
+                        .layout(options, font, self.pal.options, st.geom.options_w * z);
+                let area =
+                    Rect::from_min_max(pos2(r.min.x, top + ROW_H * z), pos2(r.max.x, top + row_h));
+                self.painter
+                    .with_clip_rect(area.intersect(self.painter.clip_rect()))
+                    .galley(pos2(x_type, area.min.y), galley, self.pal.options);
             }
             let y = top + ROW_H * 0.5 * z;
-            let changed = |differs: bool, normal: Color32| if differs && row_status == Status::Changed { self.pal.changed } else { normal };
+            let changed = |differs: bool, normal: Color32| {
+                if differs && row_status == Status::Changed {
+                    self.pal.changed
+                } else {
+                    normal
+                }
+            };
             let old = ad.and_then(|d| d.old.as_ref());
-            self.text(pos2(x_type, y), Align2::LEFT_CENTER, &diff::type_text(a, ad), Font::Field, changed(old.is_some_and(|o| o.ty != a.ty), self.pal.muted));
+            self.text(
+                pos2(x_type, y),
+                Align2::LEFT_CENTER,
+                &diff::type_text(a, ad),
+                Font::Field,
+                changed(old.is_some_and(|o| o.ty != a.ty), self.pal.muted),
+            );
             let is_pk = a.keys.iter().any(|k| k == "PK");
-            self.text(pos2(x_name, y), Align2::LEFT_CENTER, &a.name, Font::Field, if is_pk { self.pal.pk } else { self.pal.text });
+            self.text(
+                pos2(x_name, y),
+                Align2::LEFT_CENTER,
+                &a.name,
+                Font::Field,
+                if is_pk { self.pal.pk } else { self.pal.text },
+            );
             let keys = diff::keys_text(a, ad);
             if !keys.is_empty() {
                 let key_color = if is_pk { self.pal.pk } else { self.pal.fk };
-                self.text(pos2(x_keys, y), Align2::LEFT_CENTER, &keys, Font::Field, changed(old.is_some_and(|o| o.keys != a.keys), key_color));
+                self.text(
+                    pos2(x_keys, y),
+                    Align2::LEFT_CENTER,
+                    &keys,
+                    Font::Field,
+                    changed(old.is_some_and(|o| o.keys != a.keys), key_color),
+                );
             }
             if own && row_status == Status::Removed {
                 let w = self.text_width(&a.name, Font::Field);
-                self.painter.hline(x_name..=x_name + w, y, Stroke::new(1.0, self.pal.removed));
+                self.painter
+                    .hline(x_name..=x_name + w, y, Stroke::new(1.0, self.pal.removed));
             }
             top += row_h;
         }
@@ -558,11 +819,20 @@ impl Canvas<'_> {
     fn triangle(&self, c: Pos2, down: bool, color: Color32) {
         let s = 4.5 * self.z();
         let pts = if down {
-            vec![c + vec2(-s, -s * 0.6), c + vec2(s, -s * 0.6), c + vec2(0.0, s * 0.7)]
+            vec![
+                c + vec2(-s, -s * 0.6),
+                c + vec2(s, -s * 0.6),
+                c + vec2(0.0, s * 0.7),
+            ]
         } else {
-            vec![c + vec2(-s * 0.6, -s), c + vec2(-s * 0.6, s), c + vec2(s * 0.7, 0.0)]
+            vec![
+                c + vec2(-s * 0.6, -s),
+                c + vec2(-s * 0.6, s),
+                c + vec2(s * 0.7, 0.0),
+            ]
         };
-        self.painter.add(Shape::convex_polygon(pts, color, Stroke::NONE));
+        self.painter
+            .add(Shape::convex_polygon(pts, color, Stroke::NONE));
     }
 
     /// Paints all edges; returns segments for hover detection.
@@ -574,12 +844,25 @@ impl Canvas<'_> {
             if !self.visible(ra.union(rb)) {
                 continue;
             }
-            let lit = self.hl.selected.is_some_and(|s| s == edge.a || s == edge.b) || self.hl.hovered_edge == Some(i);
+            let lit = self.hl.selected.is_some_and(|s| s == edge.a || s == edge.b)
+                || self.hl.hovered_edge == Some(i);
             let dim = self.hl.selected.is_some() && !lit;
             let shade = |status: Status| match (lit, self.pal.status(status)) {
                 (true, _) => self.pal.accent,
-                (false, Some(c)) => if dim { c.gamma_multiply(0.45) } else { c },
-                (false, None) => if dim { self.pal.edge_dim } else { self.pal.edge },
+                (false, Some(c)) => {
+                    if dim {
+                        c.gamma_multiply(0.45)
+                    } else {
+                        c
+                    }
+                }
+                (false, None) => {
+                    if dim {
+                        self.pal.edge_dim
+                    } else {
+                        self.pal.edge
+                    }
+                }
             };
             let color = shade(bundle_status(scene, &edge.rels));
 
@@ -595,10 +878,17 @@ impl Canvas<'_> {
             for (k, &ri) in edge.rels.iter().enumerate() {
                 let rel = &scene.diagram.relationships[ri];
                 let color = shade(scene.rel_status(ri));
-                let (card_a, card_b) = if scene.visible_node(rel.a) == edge.a { (rel.card_a, rel.card_b) } else { (rel.card_b, rel.card_a) };
+                let (card_a, card_b) = if scene.visible_node(rel.a) == edge.a {
+                    (rel.card_a, rel.card_b)
+                } else {
+                    (rel.card_b, rel.card_a)
+                };
                 let dir = (rb.center() - ra.center()).normalized();
                 let off = dir.rot90() * (k as f32 - (n - 1.0) * 0.5) * 14.0 * self.z();
-                let (Some(pa), Some(pb)) = (exit_point(ra, ra.center() + off, dir), exit_point(rb, rb.center() + off, -dir)) else {
+                let (Some(pa), Some(pb)) = (
+                    exit_point(ra, ra.center() + off, dir),
+                    exit_point(rb, rb.center() + off, -dir),
+                ) else {
                     continue;
                 };
                 let width = if lit { 2.0 } else { 1.3 };
@@ -608,44 +898,86 @@ impl Canvas<'_> {
                 if self.z() > 0.55 && !rel.label.is_empty() {
                     self.label(pa + (pb - pa) * 0.5, &rel.label, color, lit);
                 }
-                hits.push(EdgeHit { a: pa, b: pb, edge: i });
+                hits.push(EdgeHit {
+                    a: pa,
+                    b: pb,
+                    edge: i,
+                });
             }
         }
         hits
     }
 
     #[allow(clippy::too_many_arguments)]
-    fn bundle(&self, scene: &Scene, ra: Rect, rb: Rect, edge: &VisEdge, color: Color32, lit: bool, hits: &mut Vec<EdgeHit>, i: usize) {
+    fn bundle(
+        &self,
+        scene: &Scene,
+        ra: Rect,
+        rb: Rect,
+        edge: &VisEdge,
+        color: Color32,
+        lit: bool,
+        hits: &mut Vec<EdgeHit>,
+        i: usize,
+    ) {
         let dir = (rb.center() - ra.center()).normalized();
-        let (Some(pa), Some(pb)) = (exit_point(ra, ra.center(), dir), exit_point(rb, rb.center(), -dir)) else {
+        let (Some(pa), Some(pb)) = (
+            exit_point(ra, ra.center(), dir),
+            exit_point(rb, rb.center(), -dir),
+        ) else {
             return;
         };
         let n = edge.rels.len();
         let width = (1.3 + (n as f32).ln() * 1.2) * if lit { 1.4 } else { 1.0 };
-        let identifying = edge.rels.iter().any(|&r| scene.diagram.relationships[r].identifying);
+        let identifying = edge
+            .rels
+            .iter()
+            .any(|&r| scene.diagram.relationships[r].identifying);
         self.line(pa, pb, Stroke::new(width, color), identifying);
         for p in [pa, pb] {
-            self.painter.circle_filled(p, 3.5 * self.z().max(0.5), color);
+            self.painter
+                .circle_filled(p, 3.5 * self.z().max(0.5), color);
         }
         if self.z() > 0.25 {
             self.label(pa + (pb - pa) * 0.5, &format!("{n} relations"), color, lit);
         }
-        hits.push(EdgeHit { a: pa, b: pb, edge: i });
+        hits.push(EdgeHit {
+            a: pa,
+            b: pb,
+            edge: i,
+        });
     }
 
-    fn self_loop(&self, scene: &Scene, r: Rect, edge: &VisEdge, color: Color32, hits: &mut Vec<EdgeHit>, i: usize) {
+    fn self_loop(
+        &self,
+        scene: &Scene,
+        r: Rect,
+        edge: &VisEdge,
+        color: Color32,
+        hits: &mut Vec<EdgeHit>,
+        i: usize,
+    ) {
         let z = self.z();
         for (k, &ri) in edge.rels.iter().enumerate() {
             let s = (26.0 + k as f32 * 14.0) * z;
             let a = pos2(r.max.x, r.min.y + 10.0 * z);
             let b = pos2(r.max.x - 20.0 * z, r.min.y);
             let pts = [a, a + vec2(s, 0.0), b + vec2(0.0, -s), b];
-            self.painter.add(CubicBezierShape::from_points_stroke(pts, false, Color32::TRANSPARENT, Stroke::new(1.3, color)));
+            self.painter.add(CubicBezierShape::from_points_stroke(
+                pts,
+                false,
+                Color32::TRANSPARENT,
+                Stroke::new(1.3, color),
+            ));
             let rel = &scene.diagram.relationships[ri];
             if z > 0.55 && !rel.label.is_empty() {
                 self.label(a + vec2(s * 0.8, -s * 0.8), &rel.label, color, false);
             }
-            hits.push(EdgeHit { a: a + vec2(s * 0.6, 0.0), b: b + vec2(0.0, -s * 0.6), edge: i });
+            hits.push(EdgeHit {
+                a: a + vec2(s * 0.6, 0.0),
+                b: b + vec2(0.0, -s * 0.6),
+                edge: i,
+            });
         }
     }
 
@@ -654,15 +986,26 @@ impl Canvas<'_> {
             self.painter.line_segment([a, b], stroke);
         } else {
             let z = self.z().max(0.3);
-            self.painter.extend(Shape::dashed_line(&[a, b], stroke, 6.0 * z, 4.0 * z));
+            self.painter
+                .extend(Shape::dashed_line(&[a, b], stroke, 6.0 * z, 4.0 * z));
         }
     }
 
     fn label(&self, at: Pos2, text: &str, color: Color32, strong: bool) {
         let size = Font::Small.size() * self.z().clamp(0.6, 1.4);
-        let galley = self.painter.layout_no_wrap(text.to_owned(), FontId::proportional(size), if strong { color } else { self.pal.muted });
+        let galley = self.painter.layout_no_wrap(
+            text.to_owned(),
+            FontId::proportional(size),
+            if strong { color } else { self.pal.muted },
+        );
         let r = Rect::from_center_size(at, galley.size() + vec2(8.0, 2.0));
-        self.painter.rect(r, CornerRadius::same(4), self.pal.bg, Stroke::new(0.8, color.gamma_multiply(0.5)), StrokeKind::Inside);
+        self.painter.rect(
+            r,
+            CornerRadius::same(4),
+            self.pal.bg,
+            Stroke::new(0.8, color.gamma_multiply(0.5)),
+            StrokeKind::Inside,
+        );
         self.painter.galley(r.min + vec2(4.0, 1.0), galley, color);
     }
 
@@ -675,30 +1018,48 @@ impl Canvas<'_> {
         let perp = dir.rot90();
         let bar = |d: f32| {
             let c = p + dir * d * z;
-            self.painter.line_segment([c + perp * 6.0 * z, c - perp * 6.0 * z], stroke);
+            self.painter
+                .line_segment([c + perp * 6.0 * z, c - perp * 6.0 * z], stroke);
         };
         let circle = |d: f32| {
-            self.painter.circle(p + dir * d * z, 4.0 * z, self.pal.bg, stroke);
+            self.painter
+                .circle(p + dir * d * z, 4.0 * z, self.pal.bg, stroke);
         };
         if card.is_many() {
             let apex = p + dir * 13.0 * z;
             for k in [-1.0, 0.0, 1.0] {
-                self.painter.line_segment([apex, p + perp * 7.0 * z * k], stroke);
+                self.painter
+                    .line_segment([apex, p + perp * 7.0 * z * k], stroke);
             }
-            if card.is_optional() { circle(19.0) } else { bar(17.0) }
+            if card.is_optional() {
+                circle(19.0)
+            } else {
+                bar(17.0)
+            }
         } else {
             bar(8.0);
-            if card.is_optional() { circle(17.0) } else { bar(13.0) }
+            if card.is_optional() {
+                circle(17.0)
+            } else {
+                bar(13.0)
+            }
         }
     }
 }
 
 /// One status for several relationships drawn as one line: theirs if they agree, else changed.
 fn bundle_status(scene: &Scene, rels: &[usize]) -> Status {
-    let mut it = rels.iter().map(|&r| scene.rel_status(r)).filter(|s| s.differs());
+    let mut it = rels
+        .iter()
+        .map(|&r| scene.rel_status(r))
+        .filter(|s| s.differs());
     match it.next() {
         None => Status::Same,
-        Some(first) if it.all(|s| s == first) && rels.iter().all(|&r| scene.rel_status(r) == first) => first,
+        Some(first)
+            if it.all(|s| s == first) && rels.iter().all(|&r| scene.rel_status(r) == first) =>
+        {
+            first
+        }
         Some(_) => Status::Changed,
     }
 }
@@ -736,14 +1097,24 @@ mod tests {
     #[test]
     fn exit_point_hits_border() {
         let r = Rect::from_min_max(pos2(0.0, 0.0), pos2(100.0, 50.0));
-        assert_eq!(exit_point(r, r.center(), vec2(1.0, 0.0)), Some(pos2(100.0, 25.0)));
-        assert_eq!(exit_point(r, r.center(), vec2(0.0, -1.0)), Some(pos2(50.0, 0.0)));
+        assert_eq!(
+            exit_point(r, r.center(), vec2(1.0, 0.0)),
+            Some(pos2(100.0, 25.0))
+        );
+        assert_eq!(
+            exit_point(r, r.center(), vec2(0.0, -1.0)),
+            Some(pos2(50.0, 0.0))
+        );
     }
 
     #[test]
     fn camera_round_trip() {
         let canvas = Rect::from_min_max(pos2(10.0, 20.0), pos2(810.0, 620.0));
-        let mut cam = Camera::fitting(canvas, Rect::from_min_max(pos2(-500.0, -100.0), pos2(900.0, 700.0)), 2.0);
+        let mut cam = Camera::fitting(
+            canvas,
+            Rect::from_min_max(pos2(-500.0, -100.0), pos2(900.0, 700.0)),
+            2.0,
+        );
         let p = pos2(123.0, -45.0);
         assert!((cam.to_world(canvas, cam.to_screen(canvas, p)) - p).length() < 1e-3);
         let s = pos2(300.0, 300.0);

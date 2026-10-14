@@ -1,0 +1,6 @@
+target
+.git
+docs
+notes
+.superpowers
+*.layout.json

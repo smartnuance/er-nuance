@@ -70,13 +70,13 @@ impl NativeMenu {
         let cmd = |code| Some(Accelerator::new(Modifiers::META, code));
 
         let app = Submenu::with_items(
-            "ER Navigator",
+            "ER Nuance",
             true,
             &[
                 &PredefinedMenuItem::about(
                     None,
                     Some(AboutMetadata {
-                        name: Some("ER Navigator".into()),
+                        name: Some("ER Nuance".into()),
                         version: Some(env!("CARGO_PKG_VERSION").into()),
                         ..Default::default()
                     }),
@@ -94,26 +94,62 @@ impl NativeMenu {
         .ok()?;
 
         let file = Submenu::new("File", true);
-        file.append(&m.item("Open…", cmd(Code::KeyO), Action::Open, Needs::Always)).ok()?;
-        file.append(&m.item("Reload", cmd(Code::KeyR), Action::Reload, Needs::File)).ok()?;
-        file.append(&m.item("Load Example", None, Action::LoadExample, Needs::Always)).ok()?;
+        file.append(&m.item("Open…", cmd(Code::KeyO), Action::Open, Needs::Always))
+            .ok()?;
+        file.append(&m.item("Paste Diagram…", None, Action::Paste, Needs::Always))
+            .ok()?;
+        file.append(&m.item("Reload", cmd(Code::KeyR), Action::Reload, Needs::File))
+            .ok()?;
+        file.append(&m.item("Load Example", None, Action::LoadExample, Needs::Always))
+            .ok()?;
         file.append(&PredefinedMenuItem::separator()).ok()?;
         file.append(&PredefinedMenuItem::close_window(None)).ok()?;
 
         let view = Submenu::new("View", true);
-        view.append(&m.item("Command Palette…", cmd(Code::KeyK), Action::OpenPalette, Needs::Always)).ok()?;
-        view.append(&m.item("Search Entities…", cmd(Code::KeyF), Action::FocusSearch, Needs::Scene)).ok()?;
+        view.append(&m.item(
+            "Command Palette…",
+            cmd(Code::KeyK),
+            Action::OpenPalette,
+            Needs::Always,
+        ))
+        .ok()?;
+        view.append(&m.item(
+            "Search Entities…",
+            cmd(Code::KeyF),
+            Action::FocusSearch,
+            Needs::Scene,
+        ))
+        .ok()?;
         view.append(&PredefinedMenuItem::separator()).ok()?;
-        view.append(&m.check("Show Fields  (⇧F)", Check::Fields, Action::ToggleFieldsVisible, Needs::Scene)).ok()?;
-        view.append(&m.check("Show Descriptions  (D)", Check::Descriptions, Action::ToggleDescriptions, Needs::Descriptions)).ok()?;
-        view.append(&m.check("Hide Panels  (P)", Check::PanelsHidden, Action::TogglePanels, Needs::Scene)).ok()?;
+        view.append(&m.check(
+            "Show Fields  (⇧F)",
+            Check::Fields,
+            Action::ToggleFieldsVisible,
+            Needs::Scene,
+        ))
+        .ok()?;
+        view.append(&m.check(
+            "Show Descriptions  (D)",
+            Check::Descriptions,
+            Action::ToggleDescriptions,
+            Needs::Descriptions,
+        ))
+        .ok()?;
+        view.append(&m.check(
+            "Hide Panels  (P)",
+            Check::PanelsHidden,
+            Action::TogglePanels,
+            Needs::Scene,
+        ))
+        .ok()?;
         view.append(&PredefinedMenuItem::separator()).ok()?;
         for (title, action) in [
             ("Fit All  (0)", Action::Fit),
             ("Zoom In  (+)", Action::ZoomBy(1.25)),
             ("Zoom Out  (−)", Action::ZoomBy(0.8)),
         ] {
-            view.append(&m.item(title, None, action, Needs::Scene)).ok()?;
+            view.append(&m.item(title, None, action, Needs::Scene))
+                .ok()?;
         }
         view.append(&PredefinedMenuItem::separator()).ok()?;
         for (title, action) in [
@@ -123,23 +159,53 @@ impl NativeMenu {
             ("Hide Fields of All Entities", Action::AllFields(false)),
             ("Re-layout  (L)", Action::Relayout),
         ] {
-            view.append(&m.item(title, None, action, Needs::Scene)).ok()?;
+            view.append(&m.item(title, None, action, Needs::Scene))
+                .ok()?;
         }
         view.append(&PredefinedMenuItem::separator()).ok()?;
         view.append(&PredefinedMenuItem::fullscreen(None)).ok()?;
 
         let compare = Submenu::new("Compare", true);
-        compare.append(&m.item("Compare with HEAD", None, Action::CompareHead, Needs::Git)).ok()?;
-        compare.append(&m.item("Compare with Commit…", None, Action::PickCommit, Needs::Git)).ok()?;
-        compare.append(&m.item("Compare with File…", None, Action::CompareFile, Needs::File)).ok()?;
+        compare
+            .append(&m.item("Compare with HEAD", None, Action::CompareHead, Needs::Git))
+            .ok()?;
+        compare
+            .append(&m.item("Compare with Commit…", None, Action::PickCommit, Needs::Git))
+            .ok()?;
+        compare
+            .append(&m.item("Compare with File…", None, Action::CompareFile, Needs::File))
+            .ok()?;
         compare.append(&PredefinedMenuItem::separator()).ok()?;
-        compare.append(&m.item("Next Change  (N)", None, Action::NextChange(true), Needs::Diff)).ok()?;
-        compare.append(&m.item("Previous Change  (⇧N)", None, Action::NextChange(false), Needs::Diff)).ok()?;
-        compare.append(&m.item("Exit Diff", None, Action::ExitDiff, Needs::Diff)).ok()?;
+        compare
+            .append(&m.item(
+                "Next Change  (N)",
+                None,
+                Action::NextChange(true),
+                Needs::Diff,
+            ))
+            .ok()?;
+        compare
+            .append(&m.item(
+                "Previous Change  (⇧N)",
+                None,
+                Action::NextChange(false),
+                Needs::Diff,
+            ))
+            .ok()?;
+        compare
+            .append(&m.item("Exit Diff", None, Action::ExitDiff, Needs::Diff))
+            .ok()?;
 
         let grouping = Submenu::new("Grouping", true);
         for mode in GroupingMode::ALL {
-            grouping.append(&m.check(mode.label(), Check::Mode(mode), Action::Mode(mode), Needs::Scene)).ok()?;
+            grouping
+                .append(&m.check(
+                    mode.label(),
+                    Check::Mode(mode),
+                    Action::Mode(mode),
+                    Needs::Scene,
+                ))
+                .ok()?;
         }
 
         let window = Submenu::with_items(
@@ -155,9 +221,19 @@ impl NativeMenu {
         .ok()?;
 
         let help = Submenu::new("Help", true);
-        help.append(&m.item("Keyboard Shortcuts  (?)", None, Action::ShowHelp, Needs::Always)).ok()?;
+        help.append(&m.item(
+            "Keyboard Shortcuts  (?)",
+            None,
+            Action::ShowHelp,
+            Needs::Always,
+        ))
+        .ok()?;
+        help.append(&m.item("GitHub Repository", None, Action::OpenGithub, Needs::Always))
+            .ok()?;
 
-        m._menu.append_items(&[&app, &file, &view, &compare, &grouping, &window, &help]).ok()?;
+        m._menu
+            .append_items(&[&app, &file, &view, &compare, &grouping, &window, &help])
+            .ok()?;
         m._menu.init_for_nsapp();
         window.set_as_windows_menu_for_nsapp();
         help.set_as_help_menu_for_nsapp();
@@ -171,7 +247,13 @@ impl NativeMenu {
         Some(m)
     }
 
-    fn item(&mut self, title: &str, accel: Option<Accelerator>, action: Action, needs: Needs) -> MenuItem {
+    fn item(
+        &mut self,
+        title: &str,
+        accel: Option<Accelerator>,
+        action: Action,
+        needs: Needs,
+    ) -> MenuItem {
         let item = MenuItem::new(title, true, accel);
         self.actions.insert(item.id().clone(), action);
         self.items.push((item.clone(), needs));
@@ -216,7 +298,9 @@ impl NativeMenu {
     /// Actions chosen in the menu since the last call.
     pub fn take_actions(&self) -> Vec<Action> {
         let ids = std::mem::take(&mut *self.pending.lock().unwrap());
-        ids.iter().filter_map(|id| self.actions.get(id).copied()).collect()
+        ids.iter()
+            .filter_map(|id| self.actions.get(id).copied())
+            .collect()
     }
 
     /// Forces checkmarks to be rewritten on the next `sync` (after a click toggled one natively).

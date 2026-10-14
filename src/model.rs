@@ -135,13 +135,22 @@ mod tests {
     use super::*;
 
     fn attr(comment: &str) -> Attribute {
-        Attribute { comment: Some(comment.to_owned()), ..Default::default() }
+        Attribute {
+            comment: Some(comment.to_owned()),
+            ..Default::default()
+        }
     }
 
     #[test]
     fn recognises_option_lists() {
-        assert_eq!(attr("viewer|analyst | admin").enum_options().as_deref(), Some("viewer | analyst | admin"));
-        assert_eq!(attr("ct_log | cert_san | ...").enum_options().as_deref(), Some("ct_log | cert_san | ..."));
+        assert_eq!(
+            attr("viewer|analyst | admin").enum_options().as_deref(),
+            Some("viewer | analyst | admin")
+        );
+        assert_eq!(
+            attr("ct_log | cert_san | ...").enum_options().as_deref(),
+            Some("ct_log | cert_san | ...")
+        );
         assert_eq!(attr("read | act, group list").enum_options(), None);
         assert_eq!(attr("5m | 15m | 1h for measurement").enum_options(), None);
         assert_eq!(attr("the name").enum_options(), None);

@@ -111,7 +111,10 @@ fn by_prefix(d: &Diagram) -> Vec<(String, Vec<usize>)> {
     let mut map: BTreeMap<String, (String, Vec<usize>)> = BTreeMap::new();
     for (i, e) in d.entities.iter().enumerate() {
         if let Some(p) = prefix_of(&e.id) {
-            map.entry(p.to_lowercase()).or_insert_with(|| (p.to_owned(), Vec::new())).1.push(i);
+            map.entry(p.to_lowercase())
+                .or_insert_with(|| (p.to_owned(), Vec::new()))
+                .1
+                .push(i);
         }
     }
     map.into_values().filter(|(_, m)| m.len() >= 2).collect()
@@ -135,7 +138,10 @@ fn by_clusters(d: &Diagram) -> Vec<(String, Vec<usize>)> {
         .into_values()
         .filter(|m| m.len() >= 2)
         .map(|m| {
-            let hub = *m.iter().max_by_key(|&&e| (degree[e], std::cmp::Reverse(e))).unwrap();
+            let hub = *m
+                .iter()
+                .max_by_key(|&&e| (degree[e], std::cmp::Reverse(e)))
+                .unwrap();
             (format!("{} cluster", d.entities[hub].display_name()), m)
         })
         .collect();
@@ -255,7 +261,9 @@ mod tests {
 
     #[test]
     fn file_grouping_first_group_wins() {
-        let d = parse("erDiagram\n%% group A: X, Y\n%% group B: Y, Z\nX ||--|| Y : r\nZ ||--|| Y : s\n");
+        let d = parse(
+            "erDiagram\n%% group A: X, Y\n%% group B: Y, Z\nX ||--|| Y : r\nZ ||--|| Y : s\n",
+        );
         let g = compute(&d, GroupingMode::File);
         assert_eq!(g.groups[0].members, [0, 1]);
         assert_eq!(g.groups[1].members, [2]);

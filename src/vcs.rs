@@ -1,7 +1,8 @@
-//! Where one side of a diff comes from: a plain file, or a file at some git revision.
+//! Reading a file at a git revision, in the index or in the work tree, and listing the commits
+//! that touched it.
 //!
-//! git access goes through `gix` only (read-only): resolving revisions, reading blobs from
-//! commits or the index, and listing the commits that touched a file.
+//! git access goes through `gix` only (read-only). In the browser there is no repository: the
+//! functions there find nothing or return an error.
 
 use std::path::{Path, PathBuf};
 
@@ -23,56 +24,36 @@ impl GitFile {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Rev {
     WorkTree,
+    /// Staged changes (`ernuance diff --staged`).
+    #[cfg(not(target_arch = "wasm32"))]
     Index,
     /// Anything `git rev-parse` accepts: `HEAD`, `main`, `HEAD~3`, a hash.
     Commit(String),
 }
 
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub enum Side {
-    File(PathBuf),
-    Git { file: GitFile, rev: Rev },
-}
-
-impl Side {
-    pub fn git(file: &GitFile, rev: Rev) -> Self {
-        Self::Git { file: file.clone(), rev }
-    }
-
+impl Rev {
     /// Short description for the status bar and window title.
     pub fn label(&self) -> String {
         match self {
-            Self::File(p) => p.file_name().unwrap_or(p.as_os_str()).to_string_lossy().into_owned(),
-            Self::Git { rev: Rev::WorkTree, .. } => "working tree".to_owned(),
-            Self::Git { rev: Rev::Index, .. } => "index".to_owned(),
-            Self::Git { rev: Rev::Commit(c), .. } => short_rev(c),
-        }
-    }
-
-    /// The file on disk that can change while we look at it (polled for live reload).
-    pub fn live_path(&self) -> Option<PathBuf> {
-        match self {
-            Self::File(p) => Some(p.clone()),
-            Self::Git { file, rev: Rev::WorkTree } => Some(file.disk_path()),
-            Self::Git { .. } => None,
-        }
-    }
-
-    /// The path whose layout sidecar this side uses.
-    pub fn layout_path(&self) -> PathBuf {
-        match self {
-            Self::File(p) => p.clone(),
-            Self::Git { file, .. } => file.disk_path(),
+            Self::WorkTree => "working tree".to_owned(),
+            #[cfg(not(target_arch = "wasm32"))]
+            Self::Index => "index".to_owned(),
+            Self::Commit(c) => short_rev(c),
         }
     }
 }
 
 /// Full hashes are shortened; names like `main` or `HEAD~2` are kept.
 fn short_rev(rev: &str) -> String {
-    if rev.len() == 40 && rev.bytes().all(|b| b.is_ascii_hexdigit()) { rev[..8].to_owned() } else { rev.to_owned() }
+    if rev.len() == 40 && rev.bytes().all(|b| b.is_ascii_hexdigit()) {
+        rev[..8].to_owned()
+    } else {
+        rev.to_owned()
+    }
 }
 
 /// The work tree and relative path of `path`, if it lies in a git work tree.
+#[cfg(not(target_arch = "wasm32"))]
 pub fn locate(path: &Path) -> Option<GitFile> {
     let abs = std::path::absolute(path).ok()?;
     let (dir, name) = (abs.parent()?, abs.file_name()?);
@@ -83,27 +64,37 @@ pub fn locate(path: &Path) -> Option<GitFile> {
     Some(GitFile { root, path: rel })
 }
 
-/// The text of a side. `Ok(None)` when the file does not exist there (e.g. not yet committed).
-pub fn read(side: &Side) -> Result<Option<String>, String> {
-    let bytes = match side {
-        Side::File(p) => Some(std::fs::read(p).map_err(|e| format!("cannot read {}: {e}", p.display()))?),
-        Side::Git { file, rev: Rev::WorkTree } => match std::fs::read(file.disk_path()) {
+/// The text of `file` at `rev`. `Ok(None)` when the file does not exist there.
+#[cfg(not(target_arch = "wasm32"))]
+pub fn read(file: &GitFile, rev: &Rev) -> Result<Option<String>, String> {
+    let bytes = match rev {
+        Rev::WorkTree => match std::fs::read(file.disk_path()) {
             Ok(b) => Some(b),
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => None,
             Err(e) => return Err(format!("cannot read {}: {e}", file.disk_path().display())),
         },
-        Side::Git { file, rev: Rev::Index } => {
+        Rev::Index => {
             let repo = open(file)?;
-            let index = repo.open_index().map_err(|e| format!("cannot read the git index: {e}"))?;
+            let index = repo
+                .open_index()
+                .map_err(|e| format!("cannot read the git index: {e}"))?;
             match index.entry_by_path(unix_path(&file.path).as_str().into()) {
                 None => None,
-                Some(entry) => Some(repo.find_object(entry.id).map_err(|e| e.to_string())?.data.clone()),
+                Some(entry) => Some(
+                    repo.find_object(entry.id)
+                        .map_err(|e| e.to_string())?
+                        .data
+                        .clone(),
+                ),
             }
         }
-        Side::Git { file, rev: Rev::Commit(spec) } => {
+        Rev::Commit(spec) => {
             let repo = open(file)?;
             let tree = commit_tree(&repo, spec)?;
-            match tree.lookup_entry_by_path(&file.path).map_err(|e| e.to_string())? {
+            match tree
+                .lookup_entry_by_path(&file.path)
+                .map_err(|e| e.to_string())?
+            {
                 None => None,
                 Some(entry) => Some(entry.object().map_err(|e| e.to_string())?.data.clone()),
             }
@@ -113,6 +104,7 @@ pub fn read(side: &Side) -> Result<Option<String>, String> {
 }
 
 /// Checks that a revision exists, for early error reporting.
+#[cfg(not(target_arch = "wasm32"))]
 pub fn verify(file: &GitFile, spec: &str) -> Result<(), String> {
     commit_tree(&open(file)?, spec).map(drop)
 }
@@ -132,35 +124,52 @@ impl Commit {
 }
 
 /// Commits reachable from HEAD that changed `file`, newest first, at most `limit`.
+#[cfg(not(target_arch = "wasm32"))]
 pub fn history(file: &GitFile, limit: usize) -> Result<Vec<Commit>, String> {
     const MAX_WALK: usize = 20_000;
     let repo = open(file)?;
     let head = repo.head_id().map_err(|e| format!("no HEAD: {e}"))?;
     let walk = repo
         .rev_walk([head.detach()])
-        .sorting(gix::revision::walk::Sorting::ByCommitTime(Default::default()))
+        .sorting(gix::revision::walk::Sorting::ByCommitTime(
+            Default::default(),
+        ))
         .all()
         .map_err(|e| e.to_string())?;
     let blob_at = |c: &gix::Commit<'_>| -> Option<gix::ObjectId> {
-        c.tree().ok()?.lookup_entry_by_path(&file.path).ok()?.map(|e| e.object_id())
+        c.tree()
+            .ok()?
+            .lookup_entry_by_path(&file.path)
+            .ok()?
+            .map(|e| e.object_id())
     };
     let mut out = Vec::new();
     for info in walk.take(MAX_WALK) {
         let info = info.map_err(|e| e.to_string())?;
         let commit = info.object().map_err(|e| e.to_string())?;
         let mine = blob_at(&commit);
-        let parent = info.parent_ids().next().and_then(|p| p.object().ok()?.try_into_commit().ok());
+        let parent = info
+            .parent_ids()
+            .next()
+            .and_then(|p| p.object().ok()?.try_into_commit().ok());
         let theirs = parent.as_ref().and_then(blob_at);
         if mine == theirs {
             continue;
         }
-        let summary = commit.message().map(|m| m.summary().to_string()).unwrap_or_default();
+        let summary = commit
+            .message()
+            .map(|m| m.summary().to_string())
+            .unwrap_or_default();
         let date = commit
             .time()
             .ok()
             .and_then(|t| t.format(gix::date::time::format::SHORT).ok())
             .unwrap_or_default();
-        out.push(Commit { id: info.id.to_string(), summary, date });
+        out.push(Commit {
+            id: info.id.to_string(),
+            summary,
+            date,
+        });
         if out.len() >= limit {
             break;
         }
@@ -168,22 +177,55 @@ pub fn history(file: &GitFile, limit: usize) -> Result<Vec<Commit>, String> {
     Ok(out)
 }
 
+#[cfg(not(target_arch = "wasm32"))]
 fn open(file: &GitFile) -> Result<gix::Repository, String> {
-    gix::open(&file.root).map_err(|e| format!("cannot open git repository at {}: {e}", file.root.display()))
+    gix::open(&file.root)
+        .map_err(|e| format!("cannot open git repository at {}: {e}", file.root.display()))
 }
 
+#[cfg(not(target_arch = "wasm32"))]
 fn commit_tree<'r>(repo: &'r gix::Repository, spec: &str) -> Result<gix::Tree<'r>, String> {
-    let id = repo.rev_parse_single(spec).map_err(|e| format!("unknown revision `{spec}`: {e}"))?;
+    let id = repo
+        .rev_parse_single(spec)
+        .map_err(|e| format!("unknown revision `{spec}`: {e}"))?;
     let object = id.object().map_err(|e| e.to_string())?;
-    let commit = object.peel_to_commit().map_err(|e| format!("`{spec}` is not a commit: {e}"))?;
+    let commit = object
+        .peel_to_commit()
+        .map_err(|e| format!("`{spec}` is not a commit: {e}"))?;
     commit.tree().map_err(|e| e.to_string())
 }
 
+#[cfg(not(target_arch = "wasm32"))]
 fn unix_path(p: &Path) -> String {
-    p.components().map(|c| c.as_os_str().to_string_lossy()).collect::<Vec<_>>().join("/")
+    p.components()
+        .map(|c| c.as_os_str().to_string_lossy())
+        .collect::<Vec<_>>()
+        .join("/")
 }
 
-#[cfg(test)]
+#[cfg(target_arch = "wasm32")]
+mod web {
+    use super::*;
+
+    const NO_GIT: &str = "git is not available in the browser";
+
+    pub fn locate(_: &Path) -> Option<GitFile> {
+        None
+    }
+
+    pub fn read(_: &GitFile, _: &Rev) -> Result<Option<String>, String> {
+        Err(NO_GIT.into())
+    }
+
+    pub fn history(_: &GitFile, _: usize) -> Result<Vec<Commit>, String> {
+        Err(NO_GIT.into())
+    }
+}
+
+#[cfg(target_arch = "wasm32")]
+pub use web::{history, locate, read};
+
+#[cfg(all(test, not(target_arch = "wasm32")))]
 pub mod tests {
     use super::*;
     use std::process::Command;
@@ -195,14 +237,23 @@ pub mod tests {
 
     impl Fixture {
         pub fn new() -> Self {
-            let f = Self { dir: tempfile::tempdir().unwrap() };
+            let f = Self {
+                dir: tempfile::tempdir().unwrap(),
+            };
             f.git(&["init", "-q", "-b", "main"]);
             f
         }
 
         pub fn git(&self, args: &[&str]) {
             let ok = Command::new("git")
-                .args(["-c", "user.name=t", "-c", "user.email=t@t", "-c", "commit.gpgsign=false"])
+                .args([
+                    "-c",
+                    "user.name=t",
+                    "-c",
+                    "user.email=t@t",
+                    "-c",
+                    "commit.gpgsign=false",
+                ])
                 .args(args)
                 .current_dir(self.dir.path())
                 .status()
@@ -239,13 +290,13 @@ pub mod tests {
 
         let file = f.file("db/schema.mmd");
         assert_eq!(file.path, Path::new("db/schema.mmd"));
-        let read = |rev| read(&Side::git(&file, rev)).unwrap();
+        let read = |rev| read(&file, &rev).unwrap();
         assert_eq!(read(Rev::WorkTree).as_deref(), Some("edited"));
         assert_eq!(read(Rev::Index).as_deref(), Some("staged"));
         assert_eq!(read(Rev::Commit("HEAD".into())).as_deref(), Some("two"));
         assert_eq!(read(Rev::Commit("HEAD~1".into())).as_deref(), Some("one"));
         assert_eq!(read(Rev::Commit("main".into())).as_deref(), Some("two"));
-        assert!(super::read(&Side::git(&file, Rev::Commit("nope".into()))).is_err());
+        assert!(super::read(&file, &Rev::Commit("nope".into())).is_err());
         assert!(verify(&file, "HEAD~1").is_ok() && verify(&file, "nope").is_err());
     }
 
@@ -255,8 +306,8 @@ pub mod tests {
         f.commit("other.txt", "x", "first");
         f.write("new.mmd", "erDiagram");
         let file = f.file("new.mmd");
-        assert_eq!(read(&Side::git(&file, Rev::Commit("HEAD".into()))).unwrap(), None);
-        assert_eq!(read(&Side::git(&file, Rev::Index)).unwrap(), None);
+        assert_eq!(read(&file, &Rev::Commit("HEAD".into())).unwrap(), None);
+        assert_eq!(read(&file, &Rev::Index).unwrap(), None);
     }
 
     #[test]
@@ -269,7 +320,12 @@ pub mod tests {
         let summaries: Vec<&str> = h.iter().map(|c| c.summary.as_str()).collect();
         assert_eq!(summaries, ["change a", "add a"]);
         assert_eq!(h[0].date.len(), 10);
-        assert_eq!(read(&Side::git(&f.file("a.mmd"), Rev::Commit(h[1].id.clone()))).unwrap().as_deref(), Some("1"));
+        assert_eq!(
+            read(&f.file("a.mmd"), &Rev::Commit(h[1].id.clone()))
+                .unwrap()
+                .as_deref(),
+            Some("1")
+        );
     }
 
     #[test]
@@ -277,14 +333,5 @@ pub mod tests {
         let dir = tempfile::tempdir().unwrap();
         std::fs::write(dir.path().join("x.mmd"), "").unwrap();
         assert_eq!(locate(&dir.path().join("x.mmd")), None);
-    }
-
-    #[test]
-    fn labels() {
-        let file = GitFile { root: "/r".into(), path: "s.mmd".into() };
-        assert_eq!(Side::git(&file, Rev::WorkTree).label(), "working tree");
-        assert_eq!(Side::git(&file, Rev::Commit("a".repeat(40))).label(), "aaaaaaaa");
-        assert_eq!(Side::git(&file, Rev::Commit("main".into())).label(), "main");
-        assert_eq!(Side::File("/tmp/x/old.mmd".into()).label(), "old.mmd");
     }
 }

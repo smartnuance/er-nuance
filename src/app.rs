@@ -3,22 +3,25 @@ use std::path::{Path, PathBuf};
 use std::time::SystemTime;
 
 use egui::{
-    Align, Color32, Context, Event, Key, Layout, Modifiers, PointerButton, RichText, Sense,
-    Vec2, vec2,
+    Align, Color32, Context, Event, Key, Layout, Modifiers, PointerButton, RichText, Sense, Vec2,
+    vec2,
 };
 
 use crate::canvas::{Camera, Canvas, Highlight, Palette, distance_to_segment};
-use crate::cli::Launch;
 use crate::diff::{self, DiffMarks, Status};
 use crate::grouping::GroupingMode;
-use crate::mermaid;
-use crate::palette::{CommandPalette, Item};
 use crate::model::Diagram;
+use crate::palette::{CommandPalette, Item};
+use crate::picker::{Picked, Picker, Purpose};
 use crate::scene::{Font, Measure, NodeRef, SavedLayout, Scene, Which};
-use crate::vcs::{self, Rev, Side};
+use crate::source::{Side, Source};
+use crate::vcs::{self, Rev};
 
-const EXAMPLE: &str = include_str!("../examples/commerce.mmd");
 const SEARCH_ID: &str = "entity-search";
+/// The project's home, from `Cargo.toml`.
+pub const GITHUB_URL: &str = env!("CARGO_PKG_REPOSITORY");
+/// Running in the browser: no files on disk, no git.
+const WEB: bool = cfg!(target_arch = "wasm32");
 
 struct EguiMeasure<'a>(&'a Context);
 
@@ -28,17 +31,32 @@ impl Measure for EguiMeasure<'_> {
             f if f.monospace() => egui::FontId::monospace(f.size()),
             f => egui::FontId::proportional(f.size()),
         };
-        self.0.fonts_mut(|f| f.layout_no_wrap(text.to_owned(), id, Color32::WHITE).size().x)
+        self.0.fonts_mut(|f| {
+            f.layout_no_wrap(text.to_owned(), id, Color32::WHITE)
+                .size()
+                .x
+        })
     }
 
     fn rich_height(&self, text: &str, wrap: f32) -> f32 {
-        let job = crate::richtext::job(text, Font::Small.size(), Color32::WHITE, Color32::WHITE, wrap);
+        let job = crate::richtext::job(
+            text,
+            Font::Small.size(),
+            Color32::WHITE,
+            Color32::WHITE,
+            wrap,
+        );
         self.0.fonts_mut(|f| f.layout_job(job).size().y)
     }
 
     fn wrapped_height(&self, text: &str, font: Font, wrap: f32) -> f32 {
-        let id = if font.monospace() { egui::FontId::monospace(font.size()) } else { egui::FontId::proportional(font.size()) };
-        self.0.fonts_mut(|f| f.layout(text.to_owned(), id, Color32::WHITE, wrap).size().y)
+        let id = if font.monospace() {
+            egui::FontId::monospace(font.size())
+        } else {
+            egui::FontId::proportional(font.size())
+        };
+        self.0
+            .fonts_mut(|f| f.layout(text.to_owned(), id, Color32::WHITE, wrap).size().y)
     }
 }
 
@@ -101,34 +119,15 @@ pub(crate) enum Action {
     CompareCommit(usize),
     /// Compare with another file picked in a dialog.
     CompareFile,
+    /// Open the "Paste diagram" window.
+    Paste,
+    /// Show the "About ER Nuance" window.
+    ShowAbout,
+    /// Open the GitHub repository in the browser.
+    OpenGithub,
+    /// Open the text in the paste window.
+    OpenPasted,
     ExitDiff,
-}
-
-#[derive(Clone)]
-enum Source {
-    File(PathBuf),
-    Example,
-    Diff { old: Side, new: Side },
-}
-
-impl Source {
-    /// Files that may change while shown, polled for live reload.
-    fn live_paths(&self) -> Vec<PathBuf> {
-        match self {
-            Self::File(p) => vec![p.clone()],
-            Self::Example => Vec::new(),
-            Self::Diff { old, new } => old.live_path().into_iter().chain(new.live_path()).collect(),
-        }
-    }
-
-    /// The file this view is about (the new side, in diff mode).
-    fn path(&self) -> Option<PathBuf> {
-        match self {
-            Self::File(p) => Some(p.clone()),
-            Self::Example => None,
-            Self::Diff { new, .. } => Some(new.layout_path()),
-        }
-    }
 }
 
 #[derive(Clone, Copy, PartialEq)]
@@ -162,6 +161,11 @@ pub struct ErApp {
     history: Vec<vcs::Commit>,
     /// The current file's place in a git work tree, if any.
     git: Option<vcs::GitFile>,
+    /// File dialogs and dropped files; results arrive via `take` (later, in the browser).
+    picker: Picker,
+    /// Text of the open "Paste diagram" window.
+    paste: Option<String>,
+    show_about: bool,
     #[cfg(target_os = "macos")]
     native_menu: Option<crate::native_menu::NativeMenu>,
     /// The user's "show descriptions" toggle; whether they are drawn also depends on zoom.
@@ -174,15 +178,12 @@ pub struct ErApp {
 }
 
 impl ErApp {
-    pub fn new(cc: &eframe::CreationContext<'_>, launch: Launch) -> Self {
+    pub fn new(cc: &eframe::CreationContext<'_>, initial: Option<Source>) -> Self {
         install_fonts(&cc.egui_ctx);
         Self {
             scene: None,
             source: None,
-            pending: match launch {
-                Launch::View(path) => path.map(Source::File),
-                Launch::Diff { old, new } => Some(Source::Diff { old, new }),
-            },
+            pending: initial,
             watched: Vec::new(),
             last_poll: 0.0,
             cam: Camera::default(),
@@ -200,9 +201,16 @@ impl ErApp {
             palette_mode: PaletteMode::Commands,
             history: Vec::new(),
             git: None,
+            picker: Picker::default(),
+            paste: None,
+            show_about: false,
             // Not in tests: they render headlessly and must not touch the process' menu bar.
             #[cfg(target_os = "macos")]
-            native_menu: if cfg!(test) { None } else { crate::native_menu::NativeMenu::install(&cc.egui_ctx) },
+            native_menu: if cfg!(test) {
+                None
+            } else {
+                crate::native_menu::NativeMenu::install(&cc.egui_ctx)
+            },
             desc_toggle: false,
             panels_hidden: false,
             tag_highlight: Default::default(),
@@ -214,46 +222,93 @@ impl ErApp {
     // ---- loading & saving --------------------------------------------------------------------
 
     fn load(&mut self, ctx: &Context, source: Source) {
-        let (diagram, marks, title) = match read_source(&source) {
+        let (diagram, marks, title) = match source.read() {
             Ok(r) => r,
             Err(e) => {
                 self.status = e;
                 return;
             }
         };
-        let saved = source.path().and_then(|p| read_sidecar(&p));
-        let mode = saved.as_ref().and_then(|s| s.mode).unwrap_or_else(|| GroupingMode::default_for(&diagram));
-        self.watched = source.live_paths().into_iter().map(|p| (p.clone(), modified(&p))).collect();
-        self.git = match &source {
-            Source::Diff { new: Side::Git { file, .. }, .. } => Some(file.clone()),
-            s => s.path().and_then(|p| vcs::locate(&p)),
-        };
+        // A layout stored under the same name may belong to another diagram: use it only if it
+        // knows at least one of this diagram's entities, so its camera cannot point at nothing.
+        let saved = crate::persist::load(&source.current().layout_key()).filter(|s| {
+            diagram
+                .entities
+                .iter()
+                .any(|e| s.entities.contains_key(&e.id))
+        });
+        let mode = saved
+            .as_ref()
+            .and_then(|s| s.mode)
+            .unwrap_or_else(|| GroupingMode::default_for(&diagram));
+        self.watched = source
+            .live_paths()
+            .into_iter()
+            .map(|p| (p.clone(), modified(&p)))
+            .collect();
+        let current = source.current();
+        self.git = current
+            .git_file()
+            .cloned()
+            .or_else(|| current.path().and_then(|p| vcs::locate(&p)));
         self.source = Some(source);
         self.set_scene(ctx, diagram, marks, mode, saved.as_ref());
         self.desc_toggle = saved.as_ref().is_some_and(|s| s.descriptions);
         self.panels_hidden = saved.as_ref().is_some_and(|s| s.panels_hidden);
-        self.tag_highlight = saved.as_ref().map(|s| s.tags.iter().cloned().collect()).unwrap_or_default();
+        self.tag_highlight = saved
+            .as_ref()
+            .map(|s| s.tags.iter().cloned().collect())
+            .unwrap_or_default();
         match saved.and_then(|s| s.camera) {
-            Some([x, y, z]) => self.cam = Camera { offset: vec2(x, y), zoom: z },
+            Some([x, y, z]) => {
+                self.cam = Camera {
+                    offset: vec2(x, y),
+                    zoom: z,
+                }
+            }
             None => self.fit_pending = true,
         }
         self.cam_goal = None;
         self.selected = None;
-        ctx.send_viewport_cmd(egui::ViewportCommand::Title(format!("ER Navigator — {title}")));
+        ctx.send_viewport_cmd(egui::ViewportCommand::Title(format!("ER Nuance — {title}")));
     }
 
-    fn set_scene(&mut self, ctx: &Context, diagram: Diagram, marks: Option<DiffMarks>, mode: GroupingMode, saved: Option<&SavedLayout>) {
+    fn set_scene(
+        &mut self,
+        ctx: &Context,
+        diagram: Diagram,
+        marks: Option<DiffMarks>,
+        mode: GroupingMode,
+        saved: Option<&SavedLayout>,
+    ) {
         let n = diagram.warnings.len();
         let scene = Scene::with_diff(diagram, marks, mode, saved, &EguiMeasure(ctx));
-        let warnings = if n > 0 { format!(" · {n} warnings") } else { String::new() };
+        let warnings = if n > 0 {
+            format!(" · {n} warnings")
+        } else {
+            String::new()
+        };
         self.status = match (&scene.diff, &self.diff_labels()) {
             (Some(d), Some((old, new))) => {
-                let summary = |what: &str, c: diff::Counts| if c.is_empty() { None } else { Some(format!("{what} {}", c.badge())) };
-                let parts: Vec<String> = [summary("entities", d.entity_counts()), summary("relationships", d.relationship_counts())]
-                    .into_iter()
-                    .flatten()
-                    .collect();
-                let changes = if d.is_identical() { "no differences".to_owned() } else { parts.join(" · ") };
+                let summary = |what: &str, c: diff::Counts| {
+                    if c.is_empty() {
+                        None
+                    } else {
+                        Some(format!("{what} {}", c.badge()))
+                    }
+                };
+                let parts: Vec<String> = [
+                    summary("entities", d.entity_counts()),
+                    summary("relationships", d.relationship_counts()),
+                ]
+                .into_iter()
+                .flatten()
+                .collect();
+                let changes = if d.is_identical() {
+                    "no differences".to_owned()
+                } else {
+                    parts.join(" · ")
+                };
                 format!("{old} → {new} · {changes}{warnings}")
             }
             _ => format!(
@@ -276,17 +331,22 @@ impl ErApp {
 
     /// Re-reads the file, keeping positions and open/closed state by name.
     fn reload(&mut self, ctx: &Context) {
-        let (Some(source), Some(scene)) = (&self.source, &self.scene) else { return };
-        if matches!(source, Source::Example) {
+        let (Some(source), Some(scene)) = (&self.source, &self.scene) else {
             return;
-        }
-        let Ok((diagram, marks, _)) = read_source(source) else { return };
+        };
+        let Ok((diagram, marks, _)) = source.read() else {
+            return;
+        };
         let mut saved = scene.to_saved(self.camera_array());
         saved.descriptions = self.desc_toggle;
         saved.panels_hidden = self.panels_hidden;
         saved.tags = self.tag_highlight.iter().cloned().collect();
         let mode = scene.mode;
-        self.watched = source.live_paths().into_iter().map(|p| (p.clone(), modified(&p))).collect();
+        self.watched = source
+            .live_paths()
+            .into_iter()
+            .map(|p| (p.clone(), modified(&p)))
+            .collect();
         let selected_name = self.selected.and_then(|n| match n {
             NodeRef::Entity(e) => Some(scene.diagram.entities[e].id.clone()),
             NodeRef::Group(_) => None,
@@ -321,14 +381,12 @@ impl ErApp {
             return;
         }
         self.dirty_at = None;
-        if let (Some(Source::File(p)), Some(scene)) = (&self.source, &self.scene) {
+        if let (Some(Source::View(side)), Some(scene)) = (&self.source, &self.scene) {
             let mut saved = scene.to_saved(self.camera_array());
             saved.descriptions = self.desc_toggle;
             saved.panels_hidden = self.panels_hidden;
             saved.tags = self.tag_highlight.iter().cloned().collect();
-            if let Ok(json) = serde_json::to_string_pretty(&saved)
-                && let Err(e) = std::fs::write(sidecar_path(p), json)
-            {
+            if let Err(e) = crate::persist::save(&side.layout_key(), &saved) {
                 self.status = format!("Cannot save layout: {e}");
             }
         }
@@ -337,10 +395,14 @@ impl ErApp {
     // ---- camera ------------------------------------------------------------------------------
 
     fn animate_camera(&mut self, dt: f32) -> bool {
-        let Some(goal) = self.cam_goal else { return false };
+        let Some(goal) = self.cam_goal else {
+            return false;
+        };
         let t = 1.0 - (-dt * 10.0).exp();
         self.cam = self.cam.lerp(&goal, t);
-        if (self.cam.offset - goal.offset).length() < 0.5 && (self.cam.zoom - goal.zoom).abs() < 0.001 {
+        if (self.cam.offset - goal.offset).length() < 0.5
+            && (self.cam.zoom - goal.zoom).abs() < 0.001
+        {
             self.cam = goal;
             self.cam_goal = None;
         }
@@ -354,7 +416,11 @@ impl ErApp {
             return;
         }
         let goal = Camera::fitting(self.canvas, b, 1.5);
-        if animate { self.cam_goal = Some(goal) } else { self.cam = goal }
+        if animate {
+            self.cam_goal = Some(goal)
+        } else {
+            self.cam = goal
+        }
     }
 
     /// Pans (and zooms in, if very far out) so that `n` is comfortably visible.
@@ -369,7 +435,9 @@ impl ErApp {
         }
         let mut zoom = cam.zoom.max(0.8);
         // Make sure the whole node fits.
-        zoom = zoom.min(self.canvas.width() * 0.9 / r.width()).min(self.canvas.height() * 0.9 / r.height());
+        zoom = zoom
+            .min(self.canvas.width() * 0.9 / r.width())
+            .min(self.canvas.height() * 0.9 / r.height());
         self.cam_goal = Some(Camera::centered_on(self.canvas, r.center(), zoom.max(0.05)));
     }
 
@@ -378,15 +446,34 @@ impl ErApp {
     fn apply(&mut self, ctx: &Context, action: Action, now: f64) {
         match action {
             Action::Open => {
-                if let Some(p) = rfd::FileDialog::new()
-                    .add_filter("Mermaid ER", &["mmd", "mermaid", "md", "markdown", "txt"])
-                    .pick_file()
-                {
-                    self.load(ctx, Source::File(p));
-                }
+                self.picker.pick(Purpose::Open, ctx);
                 return;
             }
-            Action::LoadExample => return self.load(ctx, Source::Example),
+            Action::Paste => {
+                self.paste.get_or_insert_with(String::new);
+                return;
+            }
+            Action::ShowAbout => {
+                self.show_about = true;
+                return;
+            }
+            Action::OpenGithub => return ctx.open_url(egui::OpenUrl::new_tab(GITHUB_URL)),
+            Action::OpenPasted => {
+                let text = self.paste.clone().unwrap_or_default();
+                if text.trim().is_empty() {
+                    self.status = "Nothing to open: paste a Mermaid erDiagram first".to_owned();
+                    return;
+                }
+                self.paste = None;
+                return self.load(
+                    ctx,
+                    Source::View(Side::Text {
+                        name: "pasted.mmd".into(),
+                        text,
+                    }),
+                );
+            }
+            Action::LoadExample => return self.load(ctx, Source::View(Side::example())),
             Action::OpenPalette => {
                 self.palette = match self.palette {
                     Some(_) => None,
@@ -396,14 +483,26 @@ impl ErApp {
                 return;
             }
             Action::CompareHead => {
-                let Some(file) = self.current_git_file() else { return };
-                self.load(ctx, Source::Diff { old: Side::git(&file, Rev::Commit("HEAD".into())), new: Side::git(&file, Rev::WorkTree) });
+                let Some(file) = self.current_git_file() else {
+                    return;
+                };
+                self.load(
+                    ctx,
+                    Source::Diff {
+                        old: Side::git(&file, Rev::Commit("HEAD".into())),
+                        new: Side::git(&file, Rev::WorkTree),
+                    },
+                );
                 return;
             }
             Action::PickCommit => {
-                let Some(file) = self.current_git_file() else { return };
+                let Some(file) = self.current_git_file() else {
+                    return;
+                };
                 match vcs::history(&file, 500) {
-                    Ok(h) if h.is_empty() => self.status = "No commits touch this file yet".to_owned(),
+                    Ok(h) if h.is_empty() => {
+                        self.status = "No commits touch this file yet".to_owned()
+                    }
                     Ok(h) => {
                         self.history = h;
                         self.palette = Some(CommandPalette::new());
@@ -414,25 +513,34 @@ impl ErApp {
                 return;
             }
             Action::CompareCommit(i) => {
-                let (Some(file), Some(c)) = (self.current_git_file(), self.history.get(i)) else { return };
+                let (Some(file), Some(c)) = (self.current_git_file(), self.history.get(i)) else {
+                    return;
+                };
                 let old = Side::git(&file, Rev::Commit(c.id.clone()));
-                self.load(ctx, Source::Diff { old, new: Side::git(&file, Rev::WorkTree) });
+                self.load(
+                    ctx,
+                    Source::Diff {
+                        old,
+                        new: Side::git(&file, Rev::WorkTree),
+                    },
+                );
                 return;
             }
             Action::CompareFile => {
-                let Some(current) = self.source.as_ref().and_then(Source::path) else { return };
-                if let Some(p) = rfd::FileDialog::new()
-                    .add_filter("Mermaid ER", &["mmd", "mermaid", "md", "markdown", "txt"])
-                    .set_title("Compare with…")
-                    .pick_file()
-                {
-                    self.load(ctx, Source::Diff { old: Side::File(p), new: Side::File(current) });
+                if self.source.is_some() {
+                    self.picker.pick(Purpose::CompareWith, ctx);
                 }
                 return;
             }
             Action::ExitDiff => {
-                if let Some(p) = self.source.as_ref().and_then(Source::path).filter(|p| p.is_file()) {
-                    self.load(ctx, Source::File(p));
+                // Back to the diagram on the new side: the same text in memory, or the file on disk.
+                let back = match self.source.as_ref().map(Source::current) {
+                    Some(side @ Side::Text { .. }) => Some(side.clone()),
+                    Some(side) => side.path().filter(|p| p.is_file()).map(Side::File),
+                    None => None,
+                };
+                if let Some(side) = back {
+                    self.load(ctx, Source::View(side));
                 }
                 return;
             }
@@ -476,7 +584,12 @@ impl ErApp {
                     .members
                     .iter()
                     .copied()
-                    .max_by_key(|&e| (scene.diagram.relationships_of(e).count(), std::cmp::Reverse(e)));
+                    .max_by_key(|&e| {
+                        (
+                            scene.diagram.relationships_of(e).count(),
+                            std::cmp::Reverse(e),
+                        )
+                    });
                 self.selected = first.map(NodeRef::Entity);
                 self.mark_dirty(now);
                 self.bring_into_view(NodeRef::Group(g), false);
@@ -499,7 +612,9 @@ impl ErApp {
                     self.mark_dirty(now);
                 }
             }
-            Action::ToggleFields(NodeRef::Entity(e)) => self.apply(ctx, Action::Toggle(NodeRef::Entity(e)), now),
+            Action::ToggleFields(NodeRef::Entity(e)) => {
+                self.apply(ctx, Action::Toggle(NodeRef::Entity(e)), now)
+            }
             Action::ToggleFields(NodeRef::Group(g)) => {
                 let members = scene.grouping.groups[g].members.clone();
                 let show = !members.iter().any(|&e| scene.fields_shown(e));
@@ -547,7 +662,9 @@ impl ErApp {
                 if order.is_empty() {
                     return;
                 }
-                let i = self.selected.and_then(|s| order.iter().position(|&n| n == s));
+                let i = self
+                    .selected
+                    .and_then(|s| order.iter().position(|&n| n == s));
                 let next = match (i, forward) {
                     (None, _) => 0,
                     (Some(i), true) => (i + 1) % order.len(),
@@ -590,7 +707,11 @@ impl ErApp {
                     .grouping
                     .groups
                     .iter()
-                    .map(|g| g.members.iter().any(|&e| scene.diagram.entities[e].tags.contains(&tag)))
+                    .map(|g| {
+                        g.members
+                            .iter()
+                            .any(|&e| scene.diagram.entities[e].tags.contains(&tag))
+                    })
                     .collect();
                 scene.set_groups_expanded(&open);
                 self.tag_highlight.insert(tag);
@@ -633,7 +754,30 @@ impl ErApp {
             | Action::PickCommit
             | Action::CompareCommit(_)
             | Action::CompareFile
+            | Action::Paste
+            | Action::ShowAbout
+            | Action::OpenGithub
+            | Action::OpenPasted
             | Action::ExitDiff => unreachable!(),
+        }
+    }
+
+    /// A file chosen in a dialog or dropped: open it, or compare it with the open diagram.
+    fn handle_picked(&mut self, ctx: &Context, picked: Picked) {
+        match picked.purpose {
+            Purpose::Open => self.load(ctx, Source::View(picked.side)),
+            Purpose::CompareWith => {
+                let Some(current) = self.source.as_ref().map(|s| s.current().clone()) else {
+                    return;
+                };
+                self.load(
+                    ctx,
+                    Source::Diff {
+                        old: picked.side,
+                        new: current,
+                    },
+                );
+            }
         }
     }
 
@@ -642,8 +786,15 @@ impl ErApp {
         self.git.clone()
     }
 
+    /// The view is about a file on disk (not an in-memory diagram, never in the browser).
+    fn has_file(&self) -> bool {
+        self.source
+            .as_ref()
+            .is_some_and(|s| s.current().path().is_some())
+    }
+
     fn in_diff(&self) -> bool {
-        matches!(self.source, Some(Source::Diff { .. }))
+        self.source.as_ref().is_some_and(Source::is_diff)
     }
 
     fn has_native_menu(&self) -> bool {
@@ -655,7 +806,9 @@ impl ErApp {
 
     #[cfg(target_os = "macos")]
     fn native_menu_actions(&mut self, actions: &mut Vec<Action>) {
-        let Some(menu) = &mut self.native_menu else { return };
+        let Some(menu) = &mut self.native_menu else {
+            return;
+        };
         let chosen = menu.take_actions();
         if !chosen.is_empty() {
             // A click toggles a check item natively; rewrite all marks from the app's state.
@@ -669,7 +822,10 @@ impl ErApp {
     fn sync_native_menu(&mut self) {
         let state = crate::native_menu::MenuState {
             has_scene: self.scene.is_some(),
-            has_file: matches!(self.source, Some(Source::File(_) | Source::Diff { .. })),
+            has_file: self
+                .source
+                .as_ref()
+                .is_some_and(|s| s.current().path().is_some()),
             has_git: self.git.is_some(),
             in_diff: self.in_diff(),
             has_descriptions: self.scene.as_ref().is_some_and(Scene::has_descriptions),
@@ -700,31 +856,87 @@ impl ErApp {
                 .collect();
         }
         let Some(scene) = &self.scene else {
-            v.push(Item::command("Open file…", sc(Modifiers::COMMAND, Key::O), Action::Open));
+            v.push(Item::command(
+                "Open file…",
+                sc(Modifiers::COMMAND, Key::O),
+                Action::Open,
+            ));
+            v.push(Item::command("Paste diagram…", None, Action::Paste));
             v.push(Item::command("Load example", None, Action::LoadExample));
+            v.push(Item::command("About ER Nuance", None, Action::ShowAbout));
+            v.push(Item::command(
+                "Open GitHub repository",
+                None,
+                Action::OpenGithub,
+            ));
             return v;
         };
 
-        v.push(Item::flag("Show fields", scene.fields_visible, sc(Modifiers::SHIFT, Key::F), Action::ToggleFieldsVisible));
+        v.push(Item::flag(
+            "Show fields",
+            scene.fields_visible,
+            sc(Modifiers::SHIFT, Key::F),
+            Action::ToggleFieldsVisible,
+        ));
         if scene.has_descriptions() {
-            v.push(Item::flag("Show descriptions", self.desc_toggle, sc(none, Key::D), Action::ToggleDescriptions));
+            v.push(Item::flag(
+                "Show descriptions",
+                self.desc_toggle,
+                sc(none, Key::D),
+                Action::ToggleDescriptions,
+            ));
         }
-        v.push(Item::flag("Hide panels", self.panels_hidden, sc(none, Key::P), Action::TogglePanels));
+        v.push(Item::flag(
+            "Hide panels",
+            self.panels_hidden,
+            sc(none, Key::P),
+            Action::TogglePanels,
+        ));
         match self.selected {
             Some(n @ NodeRef::Group(g)) => {
                 let name = &scene.grouping.groups[g].name;
-                v.push(Item::flag(format!("Expanded: {name}"), scene.grps[g].expanded, sc(none, Key::Space), Action::Toggle(n)));
-                let any = scene.grouping.groups[g].members.iter().any(|&e| scene.fields_shown(e));
-                v.push(Item::flag(format!("Fields of all members: {name}"), any, sc(none, Key::F), Action::ToggleFields(n)));
-                v.push(Item::command(format!("Center: {name}"), sc(none, Key::Period), Action::Center(n)));
+                v.push(Item::flag(
+                    format!("Expanded: {name}"),
+                    scene.grps[g].expanded,
+                    sc(none, Key::Space),
+                    Action::Toggle(n),
+                ));
+                let any = scene.grouping.groups[g]
+                    .members
+                    .iter()
+                    .any(|&e| scene.fields_shown(e));
+                v.push(Item::flag(
+                    format!("Fields of all members: {name}"),
+                    any,
+                    sc(none, Key::F),
+                    Action::ToggleFields(n),
+                ));
+                v.push(Item::command(
+                    format!("Center: {name}"),
+                    sc(none, Key::Period),
+                    Action::Center(n),
+                ));
             }
             Some(n @ NodeRef::Entity(e)) => {
                 let name = scene.diagram.entities[e].display_name();
-                v.push(Item::flag(format!("Fields: {name}"), scene.fields_shown(e), sc(none, Key::Space), Action::Toggle(n)));
-                v.push(Item::command(format!("Center: {name}"), sc(none, Key::Period), Action::Center(n)));
+                v.push(Item::flag(
+                    format!("Fields: {name}"),
+                    scene.fields_shown(e),
+                    sc(none, Key::Space),
+                    Action::Toggle(n),
+                ));
+                v.push(Item::command(
+                    format!("Center: {name}"),
+                    sc(none, Key::Period),
+                    Action::Center(n),
+                ));
                 if let Some(g) = scene.group_of(e) {
                     let group = &scene.grouping.groups[g].name;
-                    v.push(Item::command(format!("Collapse group: {group}"), sc(none, Key::C), Action::CollapseParent(n)));
+                    v.push(Item::command(
+                        format!("Collapse group: {group}"),
+                        sc(none, Key::C),
+                        Action::CollapseParent(n),
+                    ));
                 }
             }
             None => {}
@@ -733,38 +945,103 @@ impl ErApp {
             Item::command("Fit all", sc(none, Key::Num0), Action::Fit),
             Item::command("Zoom in", sc(none, Key::Plus), Action::ZoomBy(1.25)),
             Item::command("Zoom out", sc(none, Key::Minus), Action::ZoomBy(0.8)),
-            Item::command("Collapse all groups", sc(none, Key::G), Action::AllGroups(false)),
-            Item::command("Expand all groups", sc(Modifiers::SHIFT, Key::G), Action::AllGroups(true)),
+            Item::command(
+                "Collapse all groups",
+                sc(none, Key::G),
+                Action::AllGroups(false),
+            ),
+            Item::command(
+                "Expand all groups",
+                sc(Modifiers::SHIFT, Key::G),
+                Action::AllGroups(true),
+            ),
             Item::command("Show fields of all entities", None, Action::AllFields(true)),
-            Item::command("Hide fields of all entities", None, Action::AllFields(false)),
+            Item::command(
+                "Hide fields of all entities",
+                None,
+                Action::AllFields(false),
+            ),
             Item::command("Re-layout", sc(none, Key::L), Action::Relayout),
-            Item::command("Search entities and fields", sc(none, Key::Slash), Action::FocusSearch),
+            Item::command(
+                "Search entities and fields",
+                sc(none, Key::Slash),
+                Action::FocusSearch,
+            ),
         ]);
         for m in GroupingMode::ALL {
-            v.push(Item::flag(format!("Grouping: {}", m.label()), scene.mode == m, None, Action::Mode(m)));
+            v.push(Item::flag(
+                format!("Grouping: {}", m.label()),
+                scene.mode == m,
+                None,
+                Action::Mode(m),
+            ));
         }
         for (t, tag) in scene.diagram.tags.iter().enumerate() {
-            v.push(Item { needs_query: true, ..Item::flag(format!("Highlight tag: #{tag}"), self.tag_highlight.contains(tag), None, Action::ToggleTag(t)) });
-            v.push(Item { needs_query: true, ..Item::command(format!("Focus tag: #{tag} (expand only its groups)"), None, Action::FocusTag(t)) });
+            v.push(Item {
+                needs_query: true,
+                ..Item::flag(
+                    format!("Highlight tag: #{tag}"),
+                    self.tag_highlight.contains(tag),
+                    None,
+                    Action::ToggleTag(t),
+                )
+            });
+            v.push(Item {
+                needs_query: true,
+                ..Item::command(
+                    format!("Focus tag: #{tag} (expand only its groups)"),
+                    None,
+                    Action::FocusTag(t),
+                )
+            });
         }
         if scene.diff.is_some() {
-            v.push(Item::command("Next change", sc(none, Key::N), Action::NextChange(true)));
-            v.push(Item::command("Previous change", sc(Modifiers::SHIFT, Key::N), Action::NextChange(false)));
+            v.push(Item::command(
+                "Next change",
+                sc(none, Key::N),
+                Action::NextChange(true),
+            ));
+            v.push(Item::command(
+                "Previous change",
+                sc(Modifiers::SHIFT, Key::N),
+                Action::NextChange(false),
+            ));
             v.push(Item::command("Exit diff", None, Action::ExitDiff));
         }
-        if self.source.as_ref().and_then(Source::path).is_some() {
+        if self.source.is_some() {
             if self.current_git_file().is_some() {
-                v.push(Item::command("Compare with HEAD", None, Action::CompareHead));
-                v.push(Item::command("Compare with commit…", None, Action::PickCommit));
+                v.push(Item::command(
+                    "Compare with HEAD",
+                    None,
+                    Action::CompareHead,
+                ));
+                v.push(Item::command(
+                    "Compare with commit…",
+                    None,
+                    Action::PickCommit,
+                ));
             }
-            v.push(Item::command("Compare with file…", None, Action::CompareFile));
+            v.push(Item::command(
+                "Compare with file…",
+                None,
+                Action::CompareFile,
+            ));
         }
         v.extend([
             Item::command("Open file…", sc(Modifiers::COMMAND, Key::O), Action::Open),
-            Item::command("Reload file", sc(Modifiers::COMMAND, Key::R), Action::Reload),
+            Item::command("Paste diagram…", None, Action::Paste),
             Item::command("Load example", None, Action::LoadExample),
             Item::command("Keyboard shortcuts", sc(none, Key::F1), Action::ShowHelp),
+            Item::command("About ER Nuance", None, Action::ShowAbout),
+            Item::command("Open GitHub repository", None, Action::OpenGithub),
         ]);
+        if self.has_file() {
+            v.push(Item::command(
+                "Reload file",
+                sc(Modifiers::COMMAND, Key::R),
+                Action::Reload,
+            ));
+        }
         // Navigation targets, listed once something is typed.
         for (g, group) in scene.grouping.groups.iter().enumerate() {
             v.push(Item {
@@ -778,22 +1055,33 @@ impl ErApp {
                 Some(g) => format!("entity in {}", scene.grouping.groups[g].name),
                 None => "entity".to_owned(),
             };
-            v.push(Item { detail: Some(detail), needs_query: true, ..Item::command(ent.display_name(), None, Action::Reveal(e)) });
+            v.push(Item {
+                detail: Some(detail),
+                needs_query: true,
+                ..Item::command(ent.display_name(), None, Action::Reveal(e))
+            });
         }
         v
     }
 
     /// Nodes reachable by keyboard navigation, in reading order.
     fn navigable(&self) -> Vec<NodeRef> {
-        let Some(scene) = &self.scene else { return Vec::new() };
+        let Some(scene) = &self.scene else {
+            return Vec::new();
+        };
         let mut v: Vec<NodeRef> = scene
             .paint_order()
             .into_iter()
             .filter(|n| !matches!(n, NodeRef::Group(g) if scene.grps[*g].expanded))
             .collect();
         v.sort_by(|a, b| {
-            let (pa, pb) = (scene.node_rect(*a, Which::Target).center(), scene.node_rect(*b, Which::Target).center());
-            ((pa.y / 60.0).round(), pa.x).partial_cmp(&((pb.y / 60.0).round(), pb.x)).unwrap()
+            let (pa, pb) = (
+                scene.node_rect(*a, Which::Target).center(),
+                scene.node_rect(*b, Which::Target).center(),
+            );
+            ((pa.y / 60.0).round(), pa.x)
+                .partial_cmp(&((pb.y / 60.0).round(), pb.x))
+                .unwrap()
         });
         v
     }
@@ -827,7 +1115,12 @@ impl ErApp {
             let mut key = |m: Modifiers, k: Key| i.consume_key(m, k);
             // With a native menu bar these are its key equivalents, handled there.
             if !native_menu {
-                for (k, a) in [(Key::O, Action::Open), (Key::R, Action::Reload), (Key::F, Action::FocusSearch), (Key::K, Action::OpenPalette)] {
+                for (k, a) in [
+                    (Key::O, Action::Open),
+                    (Key::R, Action::Reload),
+                    (Key::F, Action::FocusSearch),
+                    (Key::K, Action::OpenPalette),
+                ] {
                     if key(Modifiers::COMMAND, k) {
                         actions.push(a);
                     }
@@ -840,7 +1133,10 @@ impl ErApp {
             if key(Modifiers::NONE, Key::Slash) {
                 self.focus_search = true;
             }
-            if key(Modifiers::NONE, Key::F1) || key(Modifiers::SHIFT, Key::Questionmark) || key(Modifiers::NONE, Key::Questionmark) {
+            if key(Modifiers::NONE, Key::F1)
+                || key(Modifiers::SHIFT, Key::Questionmark)
+                || key(Modifiers::NONE, Key::Questionmark)
+            {
                 self.show_help = !self.show_help;
             }
             if key(Modifiers::SHIFT, Key::F) {
@@ -913,7 +1209,10 @@ impl ErApp {
                 }
             }
             // `?` often arrives only as text.
-            if i.events.iter().any(|e| matches!(e, Event::Text(t) if t == "?")) {
+            if i.events
+                .iter()
+                .any(|e| matches!(e, Event::Text(t) if t == "?"))
+            {
                 self.show_help = !self.show_help;
             }
         });
@@ -1002,22 +1301,46 @@ impl ErApp {
         // Highlights.
         let neighbours: HashSet<NodeRef> = self
             .selected
-            .map(|s| scene.neighbours(s).into_iter().map(|e| scene.visible_node(e)).collect())
+            .map(|s| {
+                scene
+                    .neighbours(s)
+                    .into_iter()
+                    .map(|e| scene.visible_node(e))
+                    .collect()
+            })
             .unwrap_or_default();
         let query = self.search.trim().to_lowercase();
         let search: HashSet<usize> = if query.is_empty() {
             HashSet::new()
         } else {
-            (0..scene.ents.len()).filter(|&e| matches(scene, e, &query)).collect()
+            (0..scene.ents.len())
+                .filter(|&e| matches(scene, e, &query))
+                .collect()
         };
 
         let pal = Palette::new(ui.visuals().dark_mode);
         let painter = ui.painter_at(rect);
         let edges = scene.visible_edges();
         let hovered_edge = self.hovered_edge.filter(|&i| i < edges.len());
-        let tags = self.tag_highlight.iter().filter_map(|t| scene.diagram.tag_index(t)).collect();
-        let hl = Highlight { selected: self.selected, neighbours, search, hovered_edge, tags };
-        let c = Canvas { painter: &painter, rect, cam: self.cam, pal: &pal, hl: &hl };
+        let tags = self
+            .tag_highlight
+            .iter()
+            .filter_map(|t| scene.diagram.tag_index(t))
+            .collect();
+        let hl = Highlight {
+            selected: self.selected,
+            neighbours,
+            search,
+            hovered_edge,
+            tags,
+        };
+        let c = Canvas {
+            painter: &painter,
+            rect,
+            cam: self.cam,
+            pal: &pal,
+            hl: &hl,
+        };
         c.background();
         let order = scene.paint_order();
         for &n in &order {
@@ -1037,7 +1360,8 @@ impl ErApp {
         }
 
         // Hover: edges take precedence over the frame of an expanded group, not over boxes.
-        let over_box = hit.is_some_and(|h| !matches!(h.node, NodeRef::Group(g) if scene.grps[g].expanded));
+        let over_box =
+            hit.is_some_and(|h| !matches!(h.node, NodeRef::Group(g) if scene.grps[g].expanded));
         self.hovered_edge = None;
         if let Some(p) = resp.hover_pos()
             && !over_box
@@ -1055,9 +1379,14 @@ impl ErApp {
         // sharing one between items would squeeze longer texts into the previous item's width.
         if self.drag.is_none() && resp.hovered() {
             let tip = |id: egui::Id, add: &mut dyn FnMut(&mut egui::Ui)| {
-                egui::Tooltip::always_open(ui.ctx().clone(), ui.layer_id(), id, egui::PopupAnchor::Pointer)
-                    .gap(12.0)
-                    .show(|ui| add(ui));
+                egui::Tooltip::always_open(
+                    ui.ctx().clone(),
+                    ui.layer_id(),
+                    id,
+                    egui::PopupAnchor::Pointer,
+                )
+                .gap(12.0)
+                .show(|ui| add(ui));
             };
             if let Some(i) = self.hovered_edge {
                 let edge = &edges[i];
@@ -1067,7 +1396,9 @@ impl ErApp {
                     }
                 });
             } else if let Some(h) = hit {
-                tip(egui::Id::new(("node-tip", h.node, h.field)), &mut |ui| node_tooltip(ui, scene, h.node, h.field));
+                tip(egui::Id::new(("node-tip", h.node, h.field)), &mut |ui| {
+                    node_tooltip(ui, scene, h.node, h.field)
+                });
             }
         }
 
@@ -1075,7 +1406,14 @@ impl ErApp {
         resp.context_menu(|ui| match ctx_node {
             Some(n @ NodeRef::Group(g)) => {
                 let open = scene.grps[g].expanded;
-                if ui.button(if open { "Collapse group  (Space)" } else { "Expand group  (Space)" }).clicked() {
+                if ui
+                    .button(if open {
+                        "Collapse group  (Space)"
+                    } else {
+                        "Expand group  (Space)"
+                    })
+                    .clicked()
+                {
                     actions.push(Action::Toggle(n));
                 }
                 if ui.button("Toggle fields of all members  (F)").clicked() {
@@ -1086,7 +1424,11 @@ impl ErApp {
                 }
             }
             Some(n @ NodeRef::Entity(e)) => {
-                let label = if scene.fields_shown(e) { "Hide fields  (Space)" } else { "Show fields  (Space)" };
+                let label = if scene.fields_shown(e) {
+                    "Hide fields  (Space)"
+                } else {
+                    "Show fields  (Space)"
+                };
                 if ui.button(label).clicked() {
                     actions.push(Action::Toggle(n));
                 }
@@ -1136,7 +1478,10 @@ impl ErApp {
         // Diff mode: the changes get their own resizable, separately scrolling part on top.
         if let Some(d) = &scene.diff {
             let rows = d.entities.iter().filter(|e| e.status.differs()).count()
-                + d.relationships.iter().filter(|r| r.status.differs()).count();
+                + d.relationships
+                    .iter()
+                    .filter(|r| r.status.differs())
+                    .count();
             let row_h = ui.spacing().interact_size.y + ui.spacing().item_spacing.y;
             let avail = ui.available_height();
             let fit = (rows.max(1) + 1) as f32 * row_h + 12.0;
@@ -1148,64 +1493,90 @@ impl ErApp {
                 .size_range(row_h * 2.0..=(avail * 0.85).max(row_h * 2.0))
                 .show(ui, |ui| {
                     ui.label(RichText::new(format!("Changes ({rows})  —  N / Shift+N")).strong());
-                    egui::ScrollArea::vertical().id_salt("changes").auto_shrink(false).show(ui, |ui| {
-                        changes_list(ui, scene, d, self.selected, actions);
-                    });
+                    egui::ScrollArea::vertical()
+                        .id_salt("changes")
+                        .auto_shrink(false)
+                        .show(ui, |ui| {
+                            changes_list(ui, scene, d, self.selected, actions);
+                        });
                 });
             ui.add_space(4.0);
         }
 
-        egui::ScrollArea::vertical().id_salt("tree").auto_shrink(false).show(ui, |ui| {
-            if !query.is_empty() {
-                let hits: Vec<usize> = (0..scene.ents.len()).filter(|&e| matches(scene, e, &query)).collect();
-                if enter && let Some(&e) = hits.first() {
-                    actions.push(Action::Reveal(e));
-                }
-                ui.label(RichText::new(format!("{} matches — Enter jumps to the first", hits.len())).weak());
-                for e in hits {
-                    let group = scene.group_of(e).map(|g| scene.grouping.groups[g].name.as_str()).unwrap_or("—");
-                    let sel = self.selected == Some(NodeRef::Entity(e));
-                    let r = ui.selectable_label(sel, format!("{}   ", scene.diagram.entities[e].display_name()));
-                    let r = r.on_hover_text(format!("group: {group}"));
-                    if r.clicked() {
+        egui::ScrollArea::vertical()
+            .id_salt("tree")
+            .auto_shrink(false)
+            .show(ui, |ui| {
+                if !query.is_empty() {
+                    let hits: Vec<usize> = (0..scene.ents.len())
+                        .filter(|&e| matches(scene, e, &query))
+                        .collect();
+                    if enter && let Some(&e) = hits.first() {
                         actions.push(Action::Reveal(e));
                     }
+                    ui.label(
+                        RichText::new(format!("{} matches — Enter jumps to the first", hits.len()))
+                            .weak(),
+                    );
+                    for e in hits {
+                        let group = scene
+                            .group_of(e)
+                            .map(|g| scene.grouping.groups[g].name.as_str())
+                            .unwrap_or("—");
+                        let sel = self.selected == Some(NodeRef::Entity(e));
+                        let r = ui.selectable_label(
+                            sel,
+                            format!("{}   ", scene.diagram.entities[e].display_name()),
+                        );
+                        let r = r.on_hover_text(format!("group: {group}"));
+                        if r.clicked() {
+                            actions.push(Action::Reveal(e));
+                        }
+                    }
+                    return;
                 }
-                return;
-            }
-            for (g, group) in scene.grouping.groups.iter().enumerate() {
-                let open = scene.grps[g].expanded;
-                ui.horizontal(|ui| {
-                    if ui.small_button(if open { "⏷" } else { "⏵" }).on_hover_text("Expand / collapse on canvas").clicked() {
-                        actions.push(Action::Toggle(NodeRef::Group(g)));
-                    }
-                    let sel = self.selected == Some(NodeRef::Group(g));
-                    let text = RichText::new(format!("{}  ({})", group.name, group.members.len()))
-                        .color(Palette::new(ui.visuals().dark_mode).group(scene.grps[g].hue))
-                        .strong();
-                    if ui.selectable_label(sel, text).clicked() {
-                        actions.push(Action::Center(NodeRef::Group(g)));
-                    }
-                });
-                if open {
-                    ui.indent(("members", g), |ui| {
-                        for &e in &group.members {
-                            entity_row(ui, scene, e, self.selected, actions);
+                for (g, group) in scene.grouping.groups.iter().enumerate() {
+                    let open = scene.grps[g].expanded;
+                    ui.horizontal(|ui| {
+                        if ui
+                            .small_button(if open { "⏷" } else { "⏵" })
+                            .on_hover_text("Expand / collapse on canvas")
+                            .clicked()
+                        {
+                            actions.push(Action::Toggle(NodeRef::Group(g)));
+                        }
+                        let sel = self.selected == Some(NodeRef::Group(g));
+                        let text =
+                            RichText::new(format!("{}  ({})", group.name, group.members.len()))
+                                .color(
+                                    Palette::new(ui.visuals().dark_mode).group(scene.grps[g].hue),
+                                )
+                                .strong();
+                        if ui.selectable_label(sel, text).clicked() {
+                            actions.push(Action::Center(NodeRef::Group(g)));
                         }
                     });
+                    if open {
+                        ui.indent(("members", g), |ui| {
+                            for &e in &group.members {
+                                entity_row(ui, scene, e, self.selected, actions);
+                            }
+                        });
+                    }
                 }
-            }
-            let loose: Vec<usize> = (0..scene.ents.len()).filter(|&e| scene.group_of(e).is_none()).collect();
-            if !loose.is_empty() {
-                if !scene.grouping.groups.is_empty() {
-                    ui.separator();
-                    ui.label(RichText::new("Ungrouped").weak());
+                let loose: Vec<usize> = (0..scene.ents.len())
+                    .filter(|&e| scene.group_of(e).is_none())
+                    .collect();
+                if !loose.is_empty() {
+                    if !scene.grouping.groups.is_empty() {
+                        ui.separator();
+                        ui.label(RichText::new("Ungrouped").weak());
+                    }
+                    for e in loose {
+                        entity_row(ui, scene, e, self.selected, actions);
+                    }
                 }
-                for e in loose {
-                    entity_row(ui, scene, e, self.selected, actions);
-                }
-            }
-        });
+            });
     }
 
     /// Every tag with its entity count. Click: highlight; double-click: expand only its groups.
@@ -1233,128 +1604,184 @@ impl ErApp {
 
     fn details(&mut self, ui: &mut egui::Ui, actions: &mut Vec<Action>) {
         let (Some(scene), Some(sel)) = (&self.scene, self.selected) else {
-            ui.label(RichText::new("Select an entity or group to see its fields and relationships.").weak());
+            ui.label(
+                RichText::new("Select an entity or group to see its fields and relationships.")
+                    .weak(),
+            );
             return;
         };
-        egui::ScrollArea::vertical().auto_shrink(false).show(ui, |ui| match sel {
-            NodeRef::Entity(e) => {
-                let ent = &scene.diagram.entities[e];
-                ui.heading(status_text(ui, ent.display_name(), scene.entity_status(e)));
-                if let Some(d) = &scene.diff {
-                    let ed = &d.entities[e];
-                    match ed.status {
-                        Status::Same => {}
-                        Status::Added => { ui.label(status_text(ui, "added", Status::Added)); }
-                        Status::Removed => { ui.label(status_text(ui, "removed", Status::Removed)); }
-                        Status::Changed => {
-                            for n in &ed.notes {
-                                ui.label(status_text(ui, n.as_str(), Status::Changed));
+        egui::ScrollArea::vertical()
+            .auto_shrink(false)
+            .show(ui, |ui| match sel {
+                NodeRef::Entity(e) => {
+                    let ent = &scene.diagram.entities[e];
+                    ui.heading(status_text(ui, ent.display_name(), scene.entity_status(e)));
+                    if let Some(d) = &scene.diff {
+                        let ed = &d.entities[e];
+                        match ed.status {
+                            Status::Same => {}
+                            Status::Added => {
+                                ui.label(status_text(ui, "added", Status::Added));
+                            }
+                            Status::Removed => {
+                                ui.label(status_text(ui, "removed", Status::Removed));
+                            }
+                            Status::Changed => {
+                                for n in &ed.notes {
+                                    ui.label(status_text(ui, n.as_str(), Status::Changed));
+                                }
                             }
                         }
                     }
-                }
-                if ent.label.is_some() {
-                    ui.label(RichText::new(format!("id: {}", ent.id)).weak());
-                }
-                if !ent.tags.is_empty() {
-                    ui.horizontal_wrapped(|ui| {
-                        for tag in &ent.tags {
-                            let Some(t) = scene.diagram.tag_index(tag) else { continue };
-                            if ui.add(tag_chip(ui, t, tag, self.tag_highlight.contains(tag))).clicked() {
-                                actions.push(Action::ToggleTag(t));
+                    if ent.label.is_some() {
+                        ui.label(RichText::new(format!("id: {}", ent.id)).weak());
+                    }
+                    if !ent.tags.is_empty() {
+                        ui.horizontal_wrapped(|ui| {
+                            for tag in &ent.tags {
+                                let Some(t) = scene.diagram.tag_index(tag) else {
+                                    continue;
+                                };
+                                if ui
+                                    .add(tag_chip(ui, t, tag, self.tag_highlight.contains(tag)))
+                                    .clicked()
+                                {
+                                    actions.push(Action::ToggleTag(t));
+                                }
                             }
-                        }
-                    });
-                }
-                if let Some(d) = &ent.description {
-                    ui.add_space(4.0);
-                    ui.label(description_job(ui, d, ui.available_width()));
-                    ui.add_space(4.0);
-                }
-                if let Some(g) = scene.group_of(e)
-                    && ui.link(format!("group: {}", scene.grouping.groups[g].name)).clicked()
-                {
-                    actions.push(Action::Center(NodeRef::Group(g)));
-                }
-                ui.horizontal(|ui| {
-                    let label = if scene.fields_shown(e) { "Hide fields on canvas" } else { "Show fields on canvas" };
-                    if ui.button(label).clicked() {
-                        actions.push(Action::Toggle(sel));
+                        });
                     }
-                });
-                ui.separator();
-                ui.label(RichText::new(format!("Fields ({})", ent.attributes.len())).strong());
-                let attr_diffs = scene.diff.as_ref().map(|d| &d.entities[e].attrs);
-                egui::Grid::new("fields").striped(true).num_columns(3).show(ui, |ui| {
-                    for (i, a) in ent.attributes.iter().enumerate() {
-                        let ad = attr_diffs.map(|d| &d[i]);
-                        let st = ad.map_or(Status::Same, |d| d.status);
-                        ui.label(RichText::new(diff::keys_text(a, ad)).monospace().color(ui.visuals().warn_fg_color));
-                        let name = ui.label(status_text(ui, a.name.as_str(), st).monospace());
-                        if let Some(c) = &a.comment {
-                            match ad.and_then(|d| d.old.as_ref()).and_then(|o| o.comment.as_ref()).filter(|o| *o != c) {
-                                Some(old) => name.on_hover_text(format!("{old}\n→ {c}")),
-                                None => name.on_hover_text(c),
-                            };
-                        }
-                        ui.label(RichText::new(diff::type_text(a, ad)).monospace().weak());
-                        ui.end_row();
+                    if let Some(d) = &ent.description {
+                        ui.add_space(4.0);
+                        ui.label(description_job(ui, d, ui.available_width()));
+                        ui.add_space(4.0);
                     }
-                });
-                ui.separator();
-                let rels: Vec<usize> = scene.diagram.relationships_of(e).collect();
-                ui.label(RichText::new(format!("Relationships ({})", rels.len())).strong());
-                for ri in rels {
-                    let r = &scene.diagram.relationships[ri];
-                    let (other, mine, theirs) = if r.a == e { (r.b, r.card_a, r.card_b) } else { (r.a, r.card_b, r.card_a) };
-                    let st = scene.rel_status(ri);
-                    ui.horizontal_wrapped(|ui| {
-                        if st.differs() {
-                            ui.label(status_text(ui, st.sign(), st).strong());
-                        }
-                        ui.label(RichText::new(format!("{} → {}", mine.short(), theirs.short())).monospace().weak());
-                        if ui.link(scene.diagram.entities[other].display_name()).clicked() {
-                            actions.push(Action::Reveal(other));
-                        }
-                        if !r.label.is_empty() {
-                            ui.label(RichText::new(&r.label).italics());
-                        }
-                    });
-                }
-            }
-            NodeRef::Group(g) => {
-                let group = &scene.grouping.groups[g];
-                ui.heading(&group.name);
-                ui.horizontal(|ui| {
-                    if ui.button(if scene.grps[g].expanded { "Collapse" } else { "Expand" }).clicked() {
-                        actions.push(Action::Toggle(sel));
+                    if let Some(g) = scene.group_of(e)
+                        && ui
+                            .link(format!("group: {}", scene.grouping.groups[g].name))
+                            .clicked()
+                    {
+                        actions.push(Action::Center(NodeRef::Group(g)));
                     }
-                    if ui.button("Toggle all fields").clicked() {
-                        actions.push(Action::ToggleFields(sel));
-                    }
-                });
-                ui.separator();
-                ui.label(RichText::new(format!("Members ({})", group.members.len())).strong());
-                for &e in &group.members {
-                    if ui.link(scene.diagram.entities[e].display_name()).clicked() {
-                        actions.push(Action::Reveal(e));
-                    }
-                }
-                ui.separator();
-                let outside = scene.neighbours(sel);
-                ui.label(RichText::new(format!("Related outside the group ({})", outside.len())).strong());
-                for e in outside {
                     ui.horizontal(|ui| {
+                        let label = if scene.fields_shown(e) {
+                            "Hide fields on canvas"
+                        } else {
+                            "Show fields on canvas"
+                        };
+                        if ui.button(label).clicked() {
+                            actions.push(Action::Toggle(sel));
+                        }
+                    });
+                    ui.separator();
+                    ui.label(RichText::new(format!("Fields ({})", ent.attributes.len())).strong());
+                    let attr_diffs = scene.diff.as_ref().map(|d| &d.entities[e].attrs);
+                    egui::Grid::new("fields")
+                        .striped(true)
+                        .num_columns(3)
+                        .show(ui, |ui| {
+                            for (i, a) in ent.attributes.iter().enumerate() {
+                                let ad = attr_diffs.map(|d| &d[i]);
+                                let st = ad.map_or(Status::Same, |d| d.status);
+                                ui.label(
+                                    RichText::new(diff::keys_text(a, ad))
+                                        .monospace()
+                                        .color(ui.visuals().warn_fg_color),
+                                );
+                                let name =
+                                    ui.label(status_text(ui, a.name.as_str(), st).monospace());
+                                if let Some(c) = &a.comment {
+                                    match ad
+                                        .and_then(|d| d.old.as_ref())
+                                        .and_then(|o| o.comment.as_ref())
+                                        .filter(|o| *o != c)
+                                    {
+                                        Some(old) => name.on_hover_text(format!("{old}\n→ {c}")),
+                                        None => name.on_hover_text(c),
+                                    };
+                                }
+                                ui.label(RichText::new(diff::type_text(a, ad)).monospace().weak());
+                                ui.end_row();
+                            }
+                        });
+                    ui.separator();
+                    let rels: Vec<usize> = scene.diagram.relationships_of(e).collect();
+                    ui.label(RichText::new(format!("Relationships ({})", rels.len())).strong());
+                    for ri in rels {
+                        let r = &scene.diagram.relationships[ri];
+                        let (other, mine, theirs) = if r.a == e {
+                            (r.b, r.card_a, r.card_b)
+                        } else {
+                            (r.a, r.card_b, r.card_a)
+                        };
+                        let st = scene.rel_status(ri);
+                        ui.horizontal_wrapped(|ui| {
+                            if st.differs() {
+                                ui.label(status_text(ui, st.sign(), st).strong());
+                            }
+                            ui.label(
+                                RichText::new(format!("{} → {}", mine.short(), theirs.short()))
+                                    .monospace()
+                                    .weak(),
+                            );
+                            if ui
+                                .link(scene.diagram.entities[other].display_name())
+                                .clicked()
+                            {
+                                actions.push(Action::Reveal(other));
+                            }
+                            if !r.label.is_empty() {
+                                ui.label(RichText::new(&r.label).italics());
+                            }
+                        });
+                    }
+                }
+                NodeRef::Group(g) => {
+                    let group = &scene.grouping.groups[g];
+                    ui.heading(&group.name);
+                    ui.horizontal(|ui| {
+                        if ui
+                            .button(if scene.grps[g].expanded {
+                                "Collapse"
+                            } else {
+                                "Expand"
+                            })
+                            .clicked()
+                        {
+                            actions.push(Action::Toggle(sel));
+                        }
+                        if ui.button("Toggle all fields").clicked() {
+                            actions.push(Action::ToggleFields(sel));
+                        }
+                    });
+                    ui.separator();
+                    ui.label(RichText::new(format!("Members ({})", group.members.len())).strong());
+                    for &e in &group.members {
                         if ui.link(scene.diagram.entities[e].display_name()).clicked() {
                             actions.push(Action::Reveal(e));
                         }
-                        if let Some(og) = scene.group_of(e) {
-                            ui.label(RichText::new(format!("in {}", scene.grouping.groups[og].name)).weak());
-                        }
-                    });
+                    }
+                    ui.separator();
+                    let outside = scene.neighbours(sel);
+                    ui.label(
+                        RichText::new(format!("Related outside the group ({})", outside.len()))
+                            .strong(),
+                    );
+                    for e in outside {
+                        ui.horizontal(|ui| {
+                            if ui.link(scene.diagram.entities[e].display_name()).clicked() {
+                                actions.push(Action::Reveal(e));
+                            }
+                            if let Some(og) = scene.group_of(e) {
+                                ui.label(
+                                    RichText::new(format!("in {}", scene.grouping.groups[og].name))
+                                        .weak(),
+                                );
+                            }
+                        });
+                    }
                 }
-            }
-        });
+            });
     }
 
     fn menu(&mut self, ui: &mut egui::Ui, actions: &mut Vec<Action>) {
@@ -1363,7 +1790,10 @@ impl ErApp {
                 if ui.button("Open…  (⌘O)").clicked() {
                     actions.push(Action::Open);
                 }
-                if ui.button("Reload  (⌘R)").clicked() {
+                if ui.button("Paste diagram…").clicked() {
+                    actions.push(Action::Paste);
+                }
+                if self.has_file() && ui.button("Reload  (⌘R)").clicked() {
                     actions.push(Action::Reload);
                 }
                 if ui.button("Load example").clicked() {
@@ -1371,7 +1801,7 @@ impl ErApp {
                 }
             });
             ui.menu_button("Compare", |ui| {
-                let has_file = self.source.as_ref().and_then(Source::path).is_some();
+                let has_file = self.source.is_some();
                 let has_git = self.git.is_some();
                 let in_diff = self.in_diff();
                 for (label, enabled, a) in [
@@ -1379,7 +1809,11 @@ impl ErApp {
                     ("Compare with commit…", has_git, Action::PickCommit),
                     ("Compare with file…", has_file, Action::CompareFile),
                     ("Next change  (N)", in_diff, Action::NextChange(true)),
-                    ("Previous change  (Shift+N)", in_diff, Action::NextChange(false)),
+                    (
+                        "Previous change  (Shift+N)",
+                        in_diff,
+                        Action::NextChange(false),
+                    ),
                     ("Exit diff", in_diff, Action::ExitDiff),
                 ] {
                     if ui.add_enabled(enabled, egui::Button::new(label)).clicked() {
@@ -1418,15 +1852,21 @@ impl ErApp {
             ui.menu_button("Descriptions", |ui| {
                 let has = self.scene.as_ref().is_some_and(Scene::has_descriptions);
                 let mut on = self.desc_toggle;
-                let r = ui.add_enabled(has, egui::Checkbox::new(&mut on, "Show descriptions in boxes  (D)"));
+                let r = ui.add_enabled(
+                    has,
+                    egui::Checkbox::new(&mut on, "Show descriptions in boxes  (D)"),
+                );
                 if r.clicked() {
                     actions.push(Action::ToggleDescriptions);
                 }
-                ui.label(RichText::new(if has {
-                    "Hidden automatically when zoomed out."
-                } else {
-                    "Add `%% describe ENTITY: text` lines to the file."
-                }).weak());
+                ui.label(
+                    RichText::new(if has {
+                        "Hidden automatically when zoomed out."
+                    } else {
+                        "Add `%% describe ENTITY: text` lines to the file."
+                    })
+                    .weak(),
+                );
             });
             ui.menu_button("Grouping", |ui| {
                 let current = self.scene.as_ref().map(|s| s.mode);
@@ -1436,9 +1876,17 @@ impl ErApp {
                     }
                 }
             });
-            if ui.button("Shortcuts  (?)").clicked() {
-                self.show_help = !self.show_help;
-            }
+            ui.menu_button("Help", |ui| {
+                for (label, a) in [
+                    ("Keyboard shortcuts  (?)", Action::ShowHelp),
+                    ("About ER Nuance…", Action::ShowAbout),
+                    ("GitHub repository", Action::OpenGithub),
+                ] {
+                    if ui.button(label).clicked() {
+                        actions.push(a);
+                    }
+                }
+            });
         });
     }
 
@@ -1454,9 +1902,14 @@ impl ErApp {
             ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
                 ui.label(format!("{:.0}%", self.cam.zoom * 100.0));
                 if self.desc_toggle && self.scene.as_ref().is_some_and(|s| !s.show_descriptions) {
-                    ui.label(RichText::new("descriptions hidden at this zoom").color(ui.visuals().warn_fg_color));
+                    ui.label(
+                        RichText::new("descriptions hidden at this zoom")
+                            .color(ui.visuals().warn_fg_color),
+                    );
                 }
-                ui.label(RichText::new("scroll: pan · pinch / ⌘-scroll: zoom · ? shortcuts").weak());
+                ui.label(
+                    RichText::new("scroll: pan · pinch / ⌘-scroll: zoom · ? shortcuts").weak(),
+                );
             });
         });
     }
@@ -1464,14 +1917,21 @@ impl ErApp {
     fn welcome(&self, ui: &mut egui::Ui, actions: &mut Vec<Action>) {
         ui.vertical_centered(|ui| {
             ui.add_space(ui.available_height() * 0.3);
-            ui.heading("ER Navigator");
+            ui.heading("ER Nuance");
             ui.label("Open a Mermaid erDiagram (.mmd, or Markdown with ```mermaid blocks), or drop a file here.");
             ui.add_space(12.0);
             if ui.button("Open file…").clicked() {
                 actions.push(Action::Open);
             }
+            if ui.button("Paste diagram…").clicked() {
+                actions.push(Action::Paste);
+            }
             if ui.button("Load example").clicked() {
                 actions.push(Action::LoadExample);
+            }
+            if WEB {
+                ui.add_space(8.0);
+                ui.label(RichText::new("Files are read in your browser and never uploaded.").weak());
             }
             if !self.status.is_empty() {
                 ui.add_space(12.0);
@@ -1490,15 +1950,22 @@ impl eframe::App for ErApp {
         if let Some(src) = self.pending.take() {
             self.load(&ctx, src);
         }
-        if let Some(path) = ctx.input(|i| i.raw.dropped_files.iter().find_map(|f| (!f.path().as_os_str().is_empty()).then(|| f.path().to_path_buf()))) {
-            self.load(&ctx, Source::File(path));
+        for file in ctx.input(|i| i.raw.dropped_files.clone()) {
+            self.picker.dropped(&file, &ctx);
+        }
+        for picked in self.picker.take() {
+            self.handle_picked(&ctx, picked);
         }
         self.poll_file(&ctx, now);
 
         if let Some(scene) = &mut self.scene {
             let zoom = self.cam.zoom;
             let show = self.desc_toggle
-                && if scene.show_descriptions { zoom >= DESC_ZOOM_OFF } else { zoom >= DESC_ZOOM_ON };
+                && if scene.show_descriptions {
+                    zoom >= DESC_ZOOM_OFF
+                } else {
+                    zoom >= DESC_ZOOM_ON
+                };
             scene.set_descriptions(show);
         }
 
@@ -1512,15 +1979,30 @@ impl eframe::App for ErApp {
         }
         egui::Panel::bottom("status").show(ui, |ui| self.status_bar(ui));
         if self.scene.is_some() && !self.panels_hidden {
-            egui::Panel::left("tree").default_size(250.0).show(ui, |ui| {
-                if self.scene.as_ref().is_some_and(|s| !s.diagram.tags.is_empty()) {
-                    egui::Panel::bottom("tags").show(ui, |ui| self.tags_panel(ui, &mut actions));
-                }
-                self.sidebar(ui, &mut actions);
-            });
-            egui::Panel::right("details").default_size(290.0).show(ui, |ui| self.details(ui, &mut actions));
+            egui::Panel::left("tree")
+                .default_size(250.0)
+                .show(ui, |ui| {
+                    if self
+                        .scene
+                        .as_ref()
+                        .is_some_and(|s| !s.diagram.tags.is_empty())
+                    {
+                        egui::Panel::bottom("tags")
+                            .show(ui, |ui| self.tags_panel(ui, &mut actions));
+                    }
+                    self.sidebar(ui, &mut actions);
+                });
+            egui::Panel::right("details")
+                .default_size(290.0)
+                .show(ui, |ui| self.details(ui, &mut actions));
         }
-        egui::CentralPanel::default().frame(egui::Frame::NONE).show(ui, |ui| {
+        // The canvas paints its own background; the welcome screen needs the panel's.
+        let frame = if self.scene.is_some() {
+            egui::Frame::NONE
+        } else {
+            egui::Frame::central_panel(ui.style())
+        };
+        egui::CentralPanel::default().frame(frame).show(ui, |ui| {
             if self.scene.is_some() {
                 self.canvas_ui(ui, &mut actions, now);
             } else {
@@ -1545,10 +2027,51 @@ impl eframe::App for ErApp {
         #[cfg(target_os = "macos")]
         self.sync_native_menu();
 
+        if let Some(text) = &mut self.paste {
+            let mut open = true;
+            let mut go = false;
+            egui::Window::new("Paste diagram")
+                .open(&mut open)
+                .default_size([520.0, 420.0])
+                .show(&ctx, |ui| {
+                    ui.label("Paste a Mermaid erDiagram (or Markdown with ```mermaid blocks):");
+                    egui::ScrollArea::vertical()
+                        .max_height(320.0)
+                        .show(ui, |ui| {
+                            ui.add(
+                                egui::TextEdit::multiline(text)
+                                    .code_editor()
+                                    .desired_width(f32::INFINITY)
+                                    .desired_rows(14),
+                            );
+                        });
+                    go = ui.button("Open").clicked();
+                });
+            if go {
+                self.apply(&ctx, Action::OpenPasted, now);
+            } else if !open {
+                self.paste = None;
+            }
+        }
+
         if self.show_help {
             let mut open = true;
-            egui::Window::new("Shortcuts").open(&mut open).collapsible(false).resizable(false).show(&ctx, help_ui);
+            egui::Window::new("Shortcuts")
+                .open(&mut open)
+                .collapsible(false)
+                .resizable(false)
+                .show(&ctx, help_ui);
             self.show_help = open;
+        }
+        if self.show_about {
+            let mut open = true;
+            egui::Window::new("About ER Nuance")
+                .open(&mut open)
+                .collapsible(false)
+                .resizable(false)
+                .anchor(egui::Align2::CENTER_CENTER, [0.0, 0.0])
+                .show(&ctx, about_ui);
+            self.show_about = open;
         }
 
         let mut moving = self.scene.as_mut().is_some_and(|s| s.animate(dt));
@@ -1566,30 +2089,15 @@ impl eframe::App for ErApp {
     }
 }
 
-/// Reads and parses a source: the diagram (merged, in diff mode), the diff marks, a title.
-fn read_source(source: &Source) -> Result<(Diagram, Option<DiffMarks>, String), String> {
-    let parse = |text: &str| mermaid::parse(&mermaid::extract_er_source(text));
-    match source {
-        Source::Example => Ok((parse(EXAMPLE), None, "example: commerce.mmd".to_owned())),
-        Source::File(p) => {
-            let text = std::fs::read_to_string(p).map_err(|e| format!("Cannot read {}: {e}", p.display()))?;
-            Ok((parse(&text), None, p.display().to_string()))
-        }
-        Source::Diff { old, new } => {
-            // A side without the file (not yet committed, deleted) is an empty diagram.
-            let side = |s: &Side| vcs::read(s).map(|t| t.as_deref().map(parse).unwrap_or_default());
-            let r = diff::diff(&side(old)?, &side(new)?);
-            let title = format!("diff: {} → {} — {}", old.label(), new.label(), new.layout_path().display());
-            Ok((r.merged, Some(r.marks), title))
-        }
-    }
-}
-
 /// Entities to visit with N / Shift+N: changed entities, and one end of each changed
 /// relationship between unchanged entities, in list order.
 fn change_targets(scene: &Scene) -> Vec<usize> {
-    let Some(d) = &scene.diff else { return Vec::new() };
-    let mut v: Vec<usize> = (0..d.entities.len()).filter(|&e| d.entities[e].status.differs()).collect();
+    let Some(d) = &scene.diff else {
+        return Vec::new();
+    };
+    let mut v: Vec<usize> = (0..d.entities.len())
+        .filter(|&e| d.entities[e].status.differs())
+        .collect();
     for (ri, rd) in d.relationships.iter().enumerate() {
         let r = &scene.diagram.relationships[ri];
         if rd.status.differs() && !v.contains(&r.a) && !v.contains(&r.b) {
@@ -1612,20 +2120,40 @@ fn matches(scene: &Scene, e: usize, query: &str) -> bool {
     let ent = &scene.diagram.entities[e];
     ent.display_name().to_lowercase().contains(query)
         || ent.id.to_lowercase().contains(query)
-        || ent.attributes.iter().any(|a| a.name.to_lowercase().contains(query))
-        || ent.tags.iter().any(|t| format!("#{}", t.to_lowercase()).contains(query))
+        || ent
+            .attributes
+            .iter()
+            .any(|a| a.name.to_lowercase().contains(query))
+        || ent
+            .tags
+            .iter()
+            .any(|t| format!("#{}", t.to_lowercase()).contains(query))
 }
 
 /// Diff mode: every change, entities first; clicking one reveals it.
-fn changes_list(ui: &mut egui::Ui, scene: &Scene, d: &DiffMarks, selected: Option<NodeRef>, actions: &mut Vec<Action>) {
-    let ents: Vec<usize> = (0..d.entities.len()).filter(|&e| d.entities[e].status.differs()).collect();
-    let rels: Vec<usize> = (0..d.relationships.len()).filter(|&r| d.relationships[r].status.differs()).collect();
+fn changes_list(
+    ui: &mut egui::Ui,
+    scene: &Scene,
+    d: &DiffMarks,
+    selected: Option<NodeRef>,
+    actions: &mut Vec<Action>,
+) {
+    let ents: Vec<usize> = (0..d.entities.len())
+        .filter(|&e| d.entities[e].status.differs())
+        .collect();
+    let rels: Vec<usize> = (0..d.relationships.len())
+        .filter(|&r| d.relationships[r].status.differs())
+        .collect();
     if ents.is_empty() && rels.is_empty() {
         ui.label(RichText::new("No differences.").weak());
     }
     for e in ents {
         let st = d.entities[e].status;
-        let text = status_text(ui, format!("{} {}", st.sign(), scene.diagram.entities[e].display_name()), st);
+        let text = status_text(
+            ui,
+            format!("{} {}", st.sign(), scene.diagram.entities[e].display_name()),
+            st,
+        );
         let mut r = ui.selectable_label(selected == Some(NodeRef::Entity(e)), text);
         if !d.entities[e].notes.is_empty() {
             r = r.on_hover_text(d.entities[e].notes.join("\n"));
@@ -1638,7 +2166,17 @@ fn changes_list(ui: &mut egui::Ui, scene: &Scene, d: &DiffMarks, selected: Optio
         let rel = &scene.diagram.relationships[ri];
         let st = d.relationships[ri].status;
         let name = |e: usize| scene.diagram.entities[e].display_name();
-        let text = status_text(ui, format!("{} {} — {} — {}", st.sign(), name(rel.a), rel.label, name(rel.b)), st);
+        let text = status_text(
+            ui,
+            format!(
+                "{} {} — {} — {}",
+                st.sign(),
+                name(rel.a),
+                rel.label,
+                name(rel.b)
+            ),
+            st,
+        );
         let mut r = ui.selectable_label(false, text);
         if let Some(n) = &d.relationships[ri].note {
             r = r.on_hover_text(n);
@@ -1653,22 +2191,38 @@ fn changes_list(ui: &mut egui::Ui, scene: &Scene, d: &DiffMarks, selected: Optio
 fn tag_chip(ui: &egui::Ui, t: usize, text: &str, on: bool) -> egui::Button<'static> {
     let pal = Palette::new(ui.visuals().dark_mode);
     let c = pal.tag(t);
-    let (fill, fg) = if on { (c, pal.tag_text_on_fill()) } else { (Color32::TRANSPARENT, c) };
+    let (fill, fg) = if on {
+        (c, pal.tag_text_on_fill())
+    } else {
+        (Color32::TRANSPARENT, c)
+    };
     egui::Button::new(RichText::new(text.to_owned()).color(fg).small())
         .fill(fill)
         .stroke(egui::Stroke::new(1.2, c))
         .corner_radius(8)
 }
 
-fn entity_row(ui: &mut egui::Ui, scene: &Scene, e: usize, selected: Option<NodeRef>, actions: &mut Vec<Action>) {
+fn entity_row(
+    ui: &mut egui::Ui,
+    scene: &Scene,
+    e: usize,
+    selected: Option<NodeRef>,
+    actions: &mut Vec<Action>,
+) {
     let ent = &scene.diagram.entities[e];
     ui.horizontal(|ui| {
         let open = scene.fields_shown(e);
-        let toggle = ui.add_enabled(!ent.attributes.is_empty(), egui::Button::new(if open { "−" } else { "+" }).small());
+        let toggle = ui.add_enabled(
+            !ent.attributes.is_empty(),
+            egui::Button::new(if open { "−" } else { "+" }).small(),
+        );
         if toggle.on_hover_text("Show / hide fields").clicked() {
             actions.push(Action::Toggle(NodeRef::Entity(e)));
         }
-        if ui.selectable_label(selected == Some(NodeRef::Entity(e)), ent.display_name()).clicked() {
+        if ui
+            .selectable_label(selected == Some(NodeRef::Entity(e)), ent.display_name())
+            .clicked()
+        {
             actions.push(Action::Reveal(e));
         }
     });
@@ -1686,8 +2240,17 @@ fn relationship_line(ui: &mut egui::Ui, scene: &Scene, ri: usize) {
     let b = scene.diagram.entities[r.b].display_name();
     let dash = if r.identifying { "──" } else { "┄┄" };
     let st = scene.rel_status(ri);
-    let line = format!("{a} ({}) {dash} {} {dash} ({}) {b}", r.card_a.short(), r.label, r.card_b.short());
-    match scene.diff.as_ref().and_then(|d| d.relationships[ri].note.as_ref()) {
+    let line = format!(
+        "{a} ({}) {dash} {} {dash} ({}) {b}",
+        r.card_a.short(),
+        r.label,
+        r.card_b.short()
+    );
+    match scene
+        .diff
+        .as_ref()
+        .and_then(|d| d.relationships[ri].note.as_ref())
+    {
         Some(note) => ui.label(status_text(ui, format!("{line}   was {note}"), st)),
         None if st.differs() => ui.label(status_text(ui, format!("{} {line}", st.sign()), st)),
         None => ui.label(line),
@@ -1698,16 +2261,39 @@ fn node_tooltip(ui: &mut egui::Ui, scene: &Scene, n: NodeRef, field: Option<usiz
     match (n, field) {
         (NodeRef::Entity(e), Some(f)) => {
             let a = &scene.diagram.entities[e].attributes[f];
-            ui.label(RichText::new(format!("{} {}", a.ty, a.name)).monospace().strong());
+            ui.label(
+                RichText::new(format!("{} {}", a.ty, a.name))
+                    .monospace()
+                    .strong(),
+            );
             if let Some(ad) = scene.diff.as_ref().map(|d| &d.entities[e].attrs[f]) {
                 match &ad.old {
                     Some(old) => {
-                        let keys = if old.keys.is_empty() { String::new() } else { format!(" {}", old.keys.join(",")) };
-                        let comment = old.comment.as_ref().map(|c| format!("  \"{c}\"")).unwrap_or_default();
-                        ui.label(status_text(ui, format!("was: {} {}{keys}{comment}", old.ty, old.name), Status::Changed).monospace());
+                        let keys = if old.keys.is_empty() {
+                            String::new()
+                        } else {
+                            format!(" {}", old.keys.join(","))
+                        };
+                        let comment = old
+                            .comment
+                            .as_ref()
+                            .map(|c| format!("  \"{c}\""))
+                            .unwrap_or_default();
+                        ui.label(
+                            status_text(
+                                ui,
+                                format!("was: {} {}{keys}{comment}", old.ty, old.name),
+                                Status::Changed,
+                            )
+                            .monospace(),
+                        );
                     }
                     None if ad.status.differs() && ad.status != scene.entity_status(e) => {
-                        let word = if ad.status == Status::Added { "added" } else { "removed" };
+                        let word = if ad.status == Status::Added {
+                            "added"
+                        } else {
+                            "removed"
+                        };
                         ui.label(status_text(ui, word, ad.status));
                     }
                     None => {}
@@ -1727,8 +2313,12 @@ fn node_tooltip(ui: &mut egui::Ui, scene: &Scene, n: NodeRef, field: Option<usiz
                 let ed = &d.entities[e];
                 match ed.status {
                     Status::Same => {}
-                    Status::Added => { ui.label(status_text(ui, "added", Status::Added)); }
-                    Status::Removed => { ui.label(status_text(ui, "removed", Status::Removed)); }
+                    Status::Added => {
+                        ui.label(status_text(ui, "added", Status::Added));
+                    }
+                    Status::Removed => {
+                        ui.label(status_text(ui, "removed", Status::Removed));
+                    }
                     Status::Changed => {
                         for n in &ed.notes {
                             ui.label(status_text(ui, n.as_str(), Status::Changed));
@@ -1756,7 +2346,10 @@ fn node_tooltip(ui: &mut egui::Ui, scene: &Scene, n: NodeRef, field: Option<usiz
             if let Some(d) = &scene.diff {
                 let c = d.counts_of(&scene.grouping.groups[g].members);
                 if !c.is_empty() {
-                    ui.label(format!("changes: {} (added, removed, changed entities)", c.badge()));
+                    ui.label(format!(
+                        "changes: {} (added, removed, changed entities)",
+                        c.badge()
+                    ));
                 }
             }
             ui.label(format!(
@@ -1764,48 +2357,99 @@ fn node_tooltip(ui: &mut egui::Ui, scene: &Scene, n: NodeRef, field: Option<usiz
                 scene.grouping.groups[g].members.len(),
                 scene.neighbours(n).len()
             ));
-            let hint = if scene.grps[g].expanded { "double-click / Space: collapse" } else { "double-click / Space: expand · Enter: expand & dive in" };
+            let hint = if scene.grps[g].expanded {
+                "double-click / Space: collapse"
+            } else {
+                "double-click / Space: expand · Enter: expand & dive in"
+            };
             ui.label(RichText::new(hint).weak());
         }
     }
 }
 
-fn help_ui(ui: &mut egui::Ui) {
-    egui::Grid::new("help").num_columns(2).spacing([24.0, 4.0]).show(ui, |ui| {
-        for (k, v) in [
-            ("click / Tab / arrows", "select (arrows move to the nearest box in that direction)"),
-            ("Space, double-click", "expand / collapse group · show / hide entity fields"),
-            ("Enter", "group: expand and select its main entity"),
-            ("Esc", "go up: entity → its group → nothing"),
-            ("C / Backspace", "collapse the selected (or enclosing) group"),
-            ("F", "toggle fields of entity / all group members"),
-            ("Shift+F", "show / hide fields everywhere (each box keeps its own state)"),
-            ("G / Shift+G", "collapse / expand all groups"),
-            (". or Z", "center the selection"),
-            ("0 / Home", "fit everything"),
-            ("+ / −", "zoom"),
-            ("D", "show / hide descriptions in boxes (only when zoomed in)"),
-            ("P", "hide / show both side panels"),
-            ("L", "re-layout from scratch"),
-            ("N / Shift+N", "diff: next / previous change"),
-            ("⌘K / Ctrl+K", "command palette: type ahead, Space toggles settings"),
-            ("/ or ⌘F", "search (Enter jumps to first match)"),
-            ("⌘O / ⌘R", "open / reload (files also reload on change)"),
-            ("drag box", "move it (others make room)"),
-            ("drag background, scroll", "pan"),
-            ("pinch, ⌘/Ctrl+scroll", "zoom"),
-            ("right-click", "context menu"),
-        ] {
-            ui.label(RichText::new(k).monospace().strong());
-            ui.label(v);
-            ui.end_row();
-        }
+fn about_ui(ui: &mut egui::Ui) {
+    ui.vertical_centered(|ui| {
+        ui.heading("ER Nuance");
+        ui.label(RichText::new(format!("version {}", env!("CARGO_PKG_VERSION"))).weak());
+        ui.add_space(6.0);
+        ui.label(env!("CARGO_PKG_DESCRIPTION"));
+        ui.add_space(6.0);
+        ui.hyperlink_to("GitHub: smartnuance/er-nuance", GITHUB_URL);
+        ui.add_space(6.0);
+        ui.label(RichText::new(format!("MIT License · © {}", env!("CARGO_PKG_AUTHORS"))).weak());
     });
+}
+
+fn help_ui(ui: &mut egui::Ui) {
+    egui::Grid::new("help")
+        .num_columns(2)
+        .spacing([24.0, 4.0])
+        .show(ui, |ui| {
+            for (k, v) in [
+                (
+                    "click / Tab / arrows",
+                    "select (arrows move to the nearest box in that direction)",
+                ),
+                (
+                    "Space, double-click",
+                    "expand / collapse group · show / hide entity fields",
+                ),
+                ("Enter", "group: expand and select its main entity"),
+                ("Esc", "go up: entity → its group → nothing"),
+                (
+                    "C / Backspace",
+                    "collapse the selected (or enclosing) group",
+                ),
+                ("F", "toggle fields of entity / all group members"),
+                (
+                    "Shift+F",
+                    "show / hide fields everywhere (each box keeps its own state)",
+                ),
+                ("G / Shift+G", "collapse / expand all groups"),
+                (". or Z", "center the selection"),
+                ("0 / Home", "fit everything"),
+                ("+ / −", "zoom"),
+                (
+                    "D",
+                    "show / hide descriptions in boxes (only when zoomed in)",
+                ),
+                ("P", "hide / show both side panels"),
+                ("L", "re-layout from scratch"),
+                ("N / Shift+N", "diff: next / previous change"),
+                (
+                    "⌘K / Ctrl+K",
+                    "command palette: type ahead, Space toggles settings",
+                ),
+                ("/ or ⌘F", "search (Enter jumps to first match)"),
+                ("⌘O / ⌘R", "open / reload (files also reload on change)"),
+                ("drag box", "move it (others make room)"),
+                ("drag background, scroll", "pan"),
+                ("pinch, ⌘/Ctrl+scroll", "zoom"),
+                ("right-click", "context menu"),
+            ] {
+                ui.label(RichText::new(k).monospace().strong());
+                ui.label(v);
+                ui.end_row();
+            }
+        });
     ui.separator();
-    ui.label(RichText::new("Groups come from `%% group Name: A, B, C` lines in the Mermaid source,").weak());
-    ui.label(RichText::new("or automatically (Grouping menu). Layout is saved next to the file as *.layout.json.").weak());
+    ui.label(
+        RichText::new("Groups come from `%% group Name: A, B, C` lines in the Mermaid source,")
+            .weak(),
+    );
+    ui.label(
+        RichText::new(
+            "or automatically (Grouping menu). Layout is saved next to the file as *.layout.json.",
+        )
+        .weak(),
+    );
     ui.label(RichText::new("Tags: `#TAG` in `%% describe` lines. Tags panel: click highlights, double-click expands only its groups.").weak());
-    ui.label(RichText::new("Diff: `ernuance diff FILE [REV | A..B | OTHER_FILE] [--staged]`, or Compare menu.").weak());
+    ui.label(
+        RichText::new(
+            "Diff: `ernuance diff FILE [REV | A..B | OTHER_FILE] [--staged]`, or Compare menu.",
+        )
+        .weak(),
+    );
 }
 
 /// egui's default proportional font (Ubuntu Light) lacks arrows and box-drawing characters such
@@ -1818,20 +2462,9 @@ fn install_fonts(ctx: &Context) {
     ctx.set_fonts(fonts);
 }
 
-fn sidecar_path(p: &Path) -> PathBuf {
-    let mut s = p.as_os_str().to_owned();
-    s.push(".layout.json");
-    PathBuf::from(s)
-}
-
-fn read_sidecar(p: &Path) -> Option<SavedLayout> {
-    serde_json::from_str(&std::fs::read_to_string(sidecar_path(p)).ok()?).ok()
-}
-
 fn modified(p: &Path) -> Option<SystemTime> {
     std::fs::metadata(p).and_then(|m| m.modified()).ok()
 }
-
 
 #[cfg(test)]
 mod screenshots {
@@ -1850,17 +2483,29 @@ mod screenshots {
             .with_size(vec2(1480.0, 920.0))
             .wgpu()
             .build_eframe(|cc| {
-                let mut app = ErApp::new(cc, Launch::View(None));
-                app.pending = Some(Source::Example);
+                let mut app = ErApp::new(cc, None);
+                app.pending = Some(Source::View(Side::example()));
                 app
             });
         let shot = |h: &mut Harness<'_, ErApp>, name: &str| {
             h.run_steps(90);
-            h.render().unwrap().save(dir.join(format!("{name}.png"))).unwrap();
+            h.render()
+                .unwrap()
+                .save(dir.join(format!("{name}.png")))
+                .unwrap();
         };
         shot(&mut h, "1-overview");
 
-        let orders = h.state().scene.as_ref().unwrap().grouping.groups.iter().position(|g| g.name == "Orders").unwrap();
+        let orders = h
+            .state()
+            .scene
+            .as_ref()
+            .unwrap()
+            .grouping
+            .groups
+            .iter()
+            .position(|g| g.name == "Orders")
+            .unwrap();
         h.state_mut().selected = Some(NodeRef::Group(orders));
         h.key_press(Key::Enter);
         shot(&mut h, "2-orders-expanded");
@@ -1883,18 +2528,37 @@ mod screenshots {
         std::fs::create_dir_all(&dir).unwrap();
         // Work on a copy so the layout sidecar does not land in examples/.
         let file = dir.join("commerce.mmd");
-        std::fs::copy(concat!(env!("CARGO_MANIFEST_DIR"), "/examples/commerce.mmd"), &file).unwrap();
-        let _ = std::fs::remove_file(sidecar_path(&file));
-        let mut h = Harness::builder().with_size(vec2(1480.0, 920.0)).wgpu().build_eframe(|cc| {
-            let mut app = ErApp::new(cc, Launch::View(None));
-            app.pending = Some(Source::File(file.clone()));
-            app
-        });
+        std::fs::copy(
+            concat!(env!("CARGO_MANIFEST_DIR"), "/examples/commerce.mmd"),
+            &file,
+        )
+        .unwrap();
+        let _ = std::fs::remove_file(crate::persist::sidecar_path(&file));
+        let mut h = Harness::builder()
+            .with_size(vec2(1480.0, 920.0))
+            .wgpu()
+            .build_eframe(|cc| {
+                let mut app = ErApp::new(cc, None);
+                app.pending = Some(Source::View(Side::File(file.clone())));
+                app
+            });
         let shot = |h: &mut Harness<'_, ErApp>, name: &str| {
             h.run_steps(90);
-            h.render().unwrap().save(dir.join(format!("{name}.png"))).unwrap();
+            h.render()
+                .unwrap()
+                .save(dir.join(format!("{name}.png")))
+                .unwrap();
         };
-        let g = h.state().scene.as_ref().unwrap().grouping.groups.iter().position(|g| g.name == "Orders").unwrap();
+        let g = h
+            .state()
+            .scene
+            .as_ref()
+            .unwrap()
+            .grouping
+            .groups
+            .iter()
+            .position(|g| g.name == "Orders")
+            .unwrap();
         h.state_mut().selected = Some(NodeRef::Group(g));
         h.key_press(Key::Enter);
         h.key_press(Key::D);
@@ -1902,13 +2566,28 @@ mod screenshots {
         h.key_press(Key::Num0);
         shot(&mut h, "7-descriptions-fit");
         // ORDER's description contains `→`, which the default proportional font lacks.
-        let e = h.state().scene.as_ref().unwrap().diagram.entity_index("ORDER").unwrap();
+        let e = h
+            .state()
+            .scene
+            .as_ref()
+            .unwrap()
+            .diagram
+            .entity_index("ORDER")
+            .unwrap();
         let ctx = h.ctx.clone();
         h.state_mut().apply(&ctx, Action::Reveal(e), 0.0);
         shot(&mut h, "9-arrows-in-description");
-        let e = h.state().scene.as_ref().unwrap().diagram.entity_index("PAYMENT").unwrap();
+        let e = h
+            .state()
+            .scene
+            .as_ref()
+            .unwrap()
+            .diagram
+            .entity_index("PAYMENT")
+            .unwrap();
         h.state_mut().apply(&ctx, Action::Reveal(e), 0.0);
-        h.state_mut().apply(&ctx, Action::Toggle(NodeRef::Entity(e)), 0.0);
+        h.state_mut()
+            .apply(&ctx, Action::Toggle(NodeRef::Entity(e)), 0.0);
         shot(&mut h, "10-enum-options");
         // Hover a short field first, then a long one: the second tooltip must not keep the
         // first one's width.
@@ -1935,22 +2614,36 @@ mod screenshots {
 
     /// Writes `old.mmd` (the example) and `new.mmd` (a few changes) into `dir`.
     fn diff_fixture(dir: &Path) -> (PathBuf, PathBuf) {
-    let old = EXAMPLE.to_owned();
-    // New version: CART_ITEM dropped, GIFT_CARD added, ORDER's fields and CART–ORDER changed.
-    let start = old.find("    CART_ITEM {").unwrap();
-    let end = start + old[start..].find("    }\n").unwrap() + "    }\n".len();
-    let mut new = format!("{}{}", &old[..start], &old[end..]);
-    new = new.replace("CART, CART_ITEM, ORDER", "CART, ORDER, GIFT_CARD");
-    new = new.lines().filter(|l| !l.contains("CART_ITEM")).collect::<Vec<_>>().join("\n");
-    new = new
-        .replace("        char(3) currency\n        decimal total\n", "        string currency FK\n")
-        .replacen("        timestamp placed_at\n    }", "        timestamp placed_at\n        string notes\n    }", 1)
-        .replace("CART |o..o| ORDER", "CART |o--|| ORDER")
-        .replace("ORDER ||--o{ PAYMENT : \"paid by\"", "ORDER ||--o{ PAYMENT : \"paid by\"\n    ORDER ||--o{ GIFT_CARD : \"paid with\"");
-    let (old_p, new_p) = (dir.join("old.mmd"), dir.join("new.mmd"));
-    std::fs::write(&old_p, old).unwrap();
-    std::fs::write(&new_p, new).unwrap();
-    let _ = std::fs::remove_file(sidecar_path(&new_p));
+        let old = crate::source::EXAMPLE.to_owned();
+        // New version: CART_ITEM dropped, GIFT_CARD added, ORDER's fields and CART–ORDER changed.
+        let start = old.find("    CART_ITEM {").unwrap();
+        let end = start + old[start..].find("    }\n").unwrap() + "    }\n".len();
+        let mut new = format!("{}{}", &old[..start], &old[end..]);
+        new = new.replace("CART, CART_ITEM, ORDER", "CART, ORDER, GIFT_CARD");
+        new = new
+            .lines()
+            .filter(|l| !l.contains("CART_ITEM"))
+            .collect::<Vec<_>>()
+            .join("\n");
+        new = new
+            .replace(
+                "        char(3) currency\n        decimal total\n",
+                "        string currency FK\n",
+            )
+            .replacen(
+                "        timestamp placed_at\n    }",
+                "        timestamp placed_at\n        string notes\n    }",
+                1,
+            )
+            .replace("CART |o..o| ORDER", "CART |o--|| ORDER")
+            .replace(
+                "ORDER ||--o{ PAYMENT : \"paid by\"",
+                "ORDER ||--o{ PAYMENT : \"paid by\"\n    ORDER ||--o{ GIFT_CARD : \"paid with\"",
+            );
+        let (old_p, new_p) = (dir.join("old.mmd"), dir.join("new.mmd"));
+        std::fs::write(&old_p, old).unwrap();
+        std::fs::write(&new_p, new).unwrap();
+        let _ = std::fs::remove_file(crate::persist::sidecar_path(&new_p));
         (old_p, new_p)
     }
 
@@ -1966,31 +2659,67 @@ mod screenshots {
         let size = vec2(1480.0, 920.0);
         let shot = |h: &mut Harness<'_, ErApp>, name: &str| {
             h.run_steps(120);
-            h.render().unwrap().save(out.join(format!("{name}.png"))).unwrap();
+            h.render()
+                .unwrap()
+                .save(out.join(format!("{name}.png")))
+                .unwrap();
         };
-        let entity = |h: &Harness<'_, ErApp>, id: &str| h.state().scene.as_ref().unwrap().diagram.entity_index(id).unwrap();
+        let entity = |h: &Harness<'_, ErApp>, id: &str| {
+            h.state()
+                .scene
+                .as_ref()
+                .unwrap()
+                .diagram
+                .entity_index(id)
+                .unwrap()
+        };
 
         // Navigator: Orders expanded, ORDER's fields and descriptions shown, a tag highlighted.
         let file = dir.join("commerce.mmd");
-        std::fs::copy(concat!(env!("CARGO_MANIFEST_DIR"), "/examples/commerce.mmd"), &file).unwrap();
-        let _ = std::fs::remove_file(sidecar_path(&file));
-        let mut h = Harness::builder().with_size(size).wgpu().build_eframe(|cc| ErApp::new(cc, Launch::View(Some(file.clone()))));
+        std::fs::copy(
+            concat!(env!("CARGO_MANIFEST_DIR"), "/examples/commerce.mmd"),
+            &file,
+        )
+        .unwrap();
+        let _ = std::fs::remove_file(crate::persist::sidecar_path(&file));
+        let mut h = Harness::builder()
+            .with_size(size)
+            .wgpu()
+            .build_eframe(|cc| ErApp::new(cc, Some(Source::View(Side::File(file.clone())))));
         h.run_steps(30);
         let ctx = h.ctx.clone();
         let order = entity(&h, "ORDER");
         h.state_mut().apply(&ctx, Action::Reveal(order), 0.0);
-        h.state_mut().apply(&ctx, Action::Toggle(NodeRef::Entity(order)), 0.0);
+        h.state_mut()
+            .apply(&ctx, Action::Toggle(NodeRef::Entity(order)), 0.0);
         h.state_mut().apply(&ctx, Action::ToggleDescriptions, 0.0);
-        let t = h.state().scene.as_ref().unwrap().diagram.tag_index("append-only").unwrap();
+        let t = h
+            .state()
+            .scene
+            .as_ref()
+            .unwrap()
+            .diagram
+            .tag_index("append-only")
+            .unwrap();
         h.state_mut().apply(&ctx, Action::ToggleTag(t), 0.0);
-        h.state_mut().apply(&ctx, Action::Center(NodeRef::Entity(order)), 0.0);
+        h.state_mut()
+            .apply(&ctx, Action::Center(NodeRef::Entity(order)), 0.0);
         shot(&mut h, "navigator");
 
         // Diff: the first change (ORDER) with its fields.
         let (old_p, new_p) = diff_fixture(&dir);
-        let mut h = Harness::builder().with_size(size).wgpu().build_eframe(|cc| {
-            ErApp::new(cc, Launch::Diff { old: Side::File(old_p.clone()), new: Side::File(new_p.clone()) })
-        });
+        let mut h = Harness::builder()
+            .with_size(size)
+            .wgpu()
+            .build_eframe(|cc| {
+                ErApp::new(
+                    cc,
+                    Some(Source::Diff {
+                        old: Side::File(old_p.clone()),
+                        new: Side::File(new_p.clone()),
+                    }),
+                )
+            });
         h.run_steps(30);
         h.key_press(Key::N);
         h.key_press(Key::F);
@@ -2004,17 +2733,40 @@ mod screenshots {
         std::fs::create_dir_all(&dir).unwrap();
         let (old_p, new_p) = diff_fixture(&dir);
 
-        let mut h = Harness::builder().with_size(vec2(1480.0, 920.0)).wgpu().build_eframe(|cc| {
-            ErApp::new(cc, Launch::Diff { old: Side::File(old_p.clone()), new: Side::File(new_p.clone()) })
-        });
+        let mut h = Harness::builder()
+            .with_size(vec2(1480.0, 920.0))
+            .wgpu()
+            .build_eframe(|cc| {
+                ErApp::new(
+                    cc,
+                    Some(Source::Diff {
+                        old: Side::File(old_p.clone()),
+                        new: Side::File(new_p.clone()),
+                    }),
+                )
+            });
         let shot = |h: &mut Harness<'_, ErApp>, name: &str| {
             h.run_steps(90);
-            h.render().unwrap().save(dir.join(format!("{name}.png"))).unwrap();
+            h.render()
+                .unwrap()
+                .save(dir.join(format!("{name}.png")))
+                .unwrap();
         };
         shot(&mut h, "1-overview");
         let d = h.state().scene.as_ref().unwrap().diff.clone().unwrap();
-        assert_eq!(d.entity_counts(), diff::Counts { added: 1, removed: 1, changed: 1 });
-        assert!(h.state().status.contains("old.mmd → new.mmd"), "{}", h.state().status);
+        assert_eq!(
+            d.entity_counts(),
+            diff::Counts {
+                added: 1,
+                removed: 1,
+                changed: 1
+            }
+        );
+        assert!(
+            h.state().status.contains("old.mmd → new.mmd"),
+            "{}",
+            h.state().status
+        );
 
         h.key_press(Key::N);
         shot(&mut h, "2-first-change");
@@ -2023,19 +2775,34 @@ mod screenshots {
         h.key_press(Key::N);
         h.key_press(Key::F);
         shot(&mut h, "4-next-change-fields");
-        assert!(!sidecar_path(&new_p).exists(), "diff mode never writes a layout");
+        assert!(
+            !crate::persist::sidecar_path(&new_p).exists(),
+            "diff mode never writes a layout"
+        );
 
         // A long diff: the main entities renamed. Changes and tree scroll separately.
         let ctx = h.ctx.clone();
-        let renamed = ["ORDER", "PRODUCT", "CUSTOMER", "PAYMENT", "STOCK"].iter().fold(EXAMPLE.to_owned(), |s, w| s.replace(w, &format!("V2_{w}")));
+        let renamed = ["ORDER", "PRODUCT", "CUSTOMER", "PAYMENT", "STOCK"]
+            .iter()
+            .fold(crate::source::EXAMPLE.to_owned(), |s, w| {
+                s.replace(w, &format!("V2_{w}"))
+            });
         std::fs::write(dir.join("renamed.mmd"), renamed).unwrap();
-        let long = Source::Diff { old: Side::File(old_p.clone()), new: Side::File(dir.join("renamed.mmd")) };
+        let long = Source::Diff {
+            old: Side::File(old_p.clone()),
+            new: Side::File(dir.join("renamed.mmd")),
+        };
         h.state_mut().load(&ctx, long);
         h.state_mut().apply(&ctx, Action::AllGroups(true), 0.0);
         shot(&mut h, "5-long-diff");
         h.hover_at(egui::pos2(120.0, 150.0));
         for _ in 0..10 {
-            h.event(Event::MouseWheel { unit: egui::MouseWheelUnit::Line, delta: vec2(0.0, -3.0), modifiers: Modifiers::NONE, phase: egui::TouchPhase::Move });
+            h.event(Event::MouseWheel {
+                unit: egui::MouseWheelUnit::Line,
+                delta: vec2(0.0, -3.0),
+                modifiers: Modifiers::NONE,
+                phase: egui::TouchPhase::Move,
+            });
             h.run_steps(2);
         }
         shot(&mut h, "6-long-diff-changes-scrolled");
@@ -2047,25 +2814,46 @@ mod screenshots {
         let dir = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("target/screenshots/tags");
         std::fs::create_dir_all(&dir).unwrap();
         let file = dir.join("commerce.mmd");
-        std::fs::copy(concat!(env!("CARGO_MANIFEST_DIR"), "/examples/commerce.mmd"), &file).unwrap();
-        let _ = std::fs::remove_file(sidecar_path(&file));
-        let mut h = Harness::builder().with_size(vec2(1480.0, 920.0)).wgpu().build_eframe(|cc| {
-            ErApp::new(cc, Launch::View(Some(file.clone())))
-        });
+        std::fs::copy(
+            concat!(env!("CARGO_MANIFEST_DIR"), "/examples/commerce.mmd"),
+            &file,
+        )
+        .unwrap();
+        let _ = std::fs::remove_file(crate::persist::sidecar_path(&file));
+        let mut h = Harness::builder()
+            .with_size(vec2(1480.0, 920.0))
+            .wgpu()
+            .build_eframe(|cc| ErApp::new(cc, Some(Source::View(Side::File(file.clone())))));
         let shot = |h: &mut Harness<'_, ErApp>, name: &str| {
             h.run_steps(90);
-            h.render().unwrap().save(dir.join(format!("{name}.png"))).unwrap();
+            h.render()
+                .unwrap()
+                .save(dir.join(format!("{name}.png")))
+                .unwrap();
         };
         shot(&mut h, "1-overview-dots");
         let ctx = h.ctx.clone();
-        let tag = |h: &Harness<'_, ErApp>, name: &str| h.state().scene.as_ref().unwrap().diagram.tag_index(name).unwrap();
+        let tag = |h: &Harness<'_, ErApp>, name: &str| {
+            h.state()
+                .scene
+                .as_ref()
+                .unwrap()
+                .diagram
+                .tag_index(name)
+                .unwrap()
+        };
         let derived = tag(&h, "derived");
         h.state_mut().apply(&ctx, Action::FocusTag(derived), 0.0);
         shot(&mut h, "2-focus-derived");
         let app = h.state();
         let scene = app.scene.as_ref().unwrap();
         for (g, group) in scene.grouping.groups.iter().enumerate() {
-            let has = group.members.iter().any(|&e| scene.diagram.entities[e].tags.iter().any(|t| t == "derived"));
+            let has = group.members.iter().any(|&e| {
+                scene.diagram.entities[e]
+                    .tags
+                    .iter()
+                    .any(|t| t == "derived")
+            });
             assert_eq!(scene.grps[g].expanded, has, "{}", group.name);
         }
         assert!(app.tag_highlight.contains("derived"));
@@ -2073,7 +2861,10 @@ mod screenshots {
         h.state_mut().apply(&ctx, Action::ToggleTag(other), 0.0);
         h.state_mut().apply(&ctx, Action::ToggleTag(derived), 0.0);
         shot(&mut h, "3-highlight-append-only");
-        assert_eq!(h.state().tag_highlight.iter().collect::<Vec<_>>(), ["append-only"]);
+        assert_eq!(
+            h.state().tag_highlight.iter().collect::<Vec<_>>(),
+            ["append-only"]
+        );
     }
 
     #[test]
@@ -2084,17 +2875,41 @@ mod screenshots {
         f.write("new.mmd", "erDiagram\nN { int id }\n");
         let side = |rel: &str, rev: Rev| Side::git(&f.file(rel), rev);
 
-        let src = Source::Diff { old: side("s.mmd", Rev::Commit("HEAD".into())), new: side("s.mmd", Rev::WorkTree) };
-        let (merged, marks, title) = read_source(&src).unwrap();
+        let src = Source::Diff {
+            old: side("s.mmd", Rev::Commit("HEAD".into())),
+            new: side("s.mmd", Rev::WorkTree),
+        };
+        let (merged, marks, title) = src.read().unwrap();
         assert_eq!(merged.entities.len(), 3);
-        assert_eq!(marks.unwrap().entity_counts(), diff::Counts { added: 1, removed: 0, changed: 0 });
+        assert_eq!(
+            marks.unwrap().entity_counts(),
+            diff::Counts {
+                added: 1,
+                removed: 0,
+                changed: 0
+            }
+        );
         assert!(title.starts_with("diff: HEAD → working tree"), "{title}");
-        assert_eq!(src.live_paths(), [f.file("s.mmd").disk_path()], "only the work tree side is polled");
+        assert_eq!(
+            src.live_paths(),
+            [f.file("s.mmd").disk_path()],
+            "only the work tree side is polled"
+        );
 
         // Not committed yet: the old side is empty.
-        let src = Source::Diff { old: side("new.mmd", Rev::Commit("HEAD".into())), new: side("new.mmd", Rev::WorkTree) };
-        let (_, marks, _) = read_source(&src).unwrap();
-        assert_eq!(marks.unwrap().entity_counts(), diff::Counts { added: 1, removed: 0, changed: 0 });
+        let src = Source::Diff {
+            old: side("new.mmd", Rev::Commit("HEAD".into())),
+            new: side("new.mmd", Rev::WorkTree),
+        };
+        let (_, marks, _) = src.read().unwrap();
+        assert_eq!(
+            marks.unwrap().entity_counts(),
+            diff::Counts {
+                added: 1,
+                removed: 0,
+                changed: 0
+            }
+        );
     }
 
     #[test]
@@ -2103,15 +2918,21 @@ mod screenshots {
         install_fonts(&ctx);
         let mut out = ctx.run_ui(Default::default(), |_| {});
         out.textures_delta.clear();
-        let used: String = [include_str!("../examples/commerce.mmd"), include_str!("app.rs"), include_str!("canvas.rs"), include_str!("diff.rs")]
-            .concat()
-            .chars()
-            .filter(|c| !c.is_ascii())
-            // Drawn from egui's emoji font, which `has_glyph` does not report.
-            .filter(|&c| c != '⚠')
-            .collect();
+        let used: String = [
+            include_str!("../examples/commerce.mmd"),
+            include_str!("app.rs"),
+            include_str!("canvas.rs"),
+            include_str!("diff.rs"),
+        ]
+        .concat()
+        .chars()
+        .filter(|c| !c.is_ascii())
+        // Drawn from egui's emoji font, which `has_glyph` does not report.
+        .filter(|&c| c != '⚠')
+        .collect();
         let id = egui::FontId::proportional(12.0);
-        let missing: String = ctx.fonts_mut(|f| used.chars().filter(|&c| !f.has_glyph(&id, c)).collect());
+        let missing: String =
+            ctx.fonts_mut(|f| used.chars().filter(|&c| !f.has_glyph(&id, c)).collect());
         assert!(missing.is_empty(), "missing glyphs: {missing:?}");
     }
 
@@ -2120,14 +2941,20 @@ mod screenshots {
     fn command_palette() {
         let dir = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("target/screenshots");
         std::fs::create_dir_all(&dir).unwrap();
-        let mut h = Harness::builder().with_size(vec2(1480.0, 920.0)).wgpu().build_eframe(|cc| {
-            let mut app = ErApp::new(cc, Launch::View(None));
-            app.pending = Some(Source::Example);
-            app
-        });
+        let mut h = Harness::builder()
+            .with_size(vec2(1480.0, 920.0))
+            .wgpu()
+            .build_eframe(|cc| {
+                let mut app = ErApp::new(cc, None);
+                app.pending = Some(Source::View(Side::example()));
+                app
+            });
         let shot = |h: &mut Harness<'_, ErApp>, name: &str| {
             h.run_steps(30);
-            h.render().unwrap().save(dir.join(format!("{name}.png"))).unwrap();
+            h.render()
+                .unwrap()
+                .save(dir.join(format!("{name}.png")))
+                .unwrap();
         };
         let type_text = |h: &mut Harness<'_, ErApp>, t: &str| {
             for c in t.chars() {
@@ -2136,7 +2963,16 @@ mod screenshots {
             }
         };
         h.run_steps(30);
-        let order = h.state().scene.as_ref().unwrap().grouping.groups.iter().position(|g| g.name == "Orders").unwrap();
+        let order = h
+            .state()
+            .scene
+            .as_ref()
+            .unwrap()
+            .grouping
+            .groups
+            .iter()
+            .position(|g| g.name == "Orders")
+            .unwrap();
         h.state_mut().selected = Some(NodeRef::Group(order));
 
         h.key_press_modifiers(Modifiers::COMMAND, Key::K);
@@ -2147,7 +2983,10 @@ mod screenshots {
         shot(&mut h, "13-palette-filtered");
         h.key_press(Key::Space);
         h.run_steps(3);
-        assert!(!h.state().scene.as_ref().unwrap().fields_visible, "Space toggles the flag");
+        assert!(
+            !h.state().scene.as_ref().unwrap().fields_visible,
+            "Space toggles the flag"
+        );
         assert!(h.state().palette.is_some(), "and keeps the palette open");
         shot(&mut h, "14-palette-flag-toggled");
 
@@ -2163,7 +3002,13 @@ mod screenshots {
         shot(&mut h, "16-after-goto");
         let app = h.state();
         let scene = app.scene.as_ref().unwrap();
-        assert_eq!(app.selected, scene.diagram.entity_index("ORDER_LINE").map(NodeRef::Entity));
+        assert_eq!(
+            app.selected,
+            scene
+                .diagram
+                .entity_index("ORDER_LINE")
+                .map(NodeRef::Entity)
+        );
         assert!(app.palette.is_none());
 
         let center_before = app.cam.to_world(app.canvas, app.canvas.center());
@@ -2172,8 +3017,262 @@ mod screenshots {
         shot(&mut h, "17-panels-hidden");
         let app = h.state();
         assert!(app.panels_hidden);
-        assert!(app.canvas.width() > width_before + 400.0, "canvas takes the panels' space");
+        assert!(
+            app.canvas.width() > width_before + 400.0,
+            "canvas takes the panels' space"
+        );
         let center_after = app.cam.to_world(app.canvas, app.canvas.center());
-        assert!((center_after - center_before).length() < 1.0, "view stays centered");
+        assert!(
+            (center_after - center_before).length() < 1.0,
+            "view stays centered"
+        );
+    }
+
+    fn headless(initial: Option<Source>) -> Harness<'static, ErApp> {
+        Harness::builder()
+            .with_size(vec2(1200.0, 800.0))
+            .build_eframe(move |cc| ErApp::new(cc, initial.clone()))
+    }
+
+    fn text(name: &str, t: &str) -> Side {
+        Side::Text {
+            name: name.into(),
+            text: t.into(),
+        }
+    }
+
+    #[test]
+    fn picked_files_open_and_compare() {
+        let mut h = headless(Some(Source::View(Side::example())));
+        h.run_steps(2);
+        let ctx = h.ctx.clone();
+        let a = text("a.mmd", "erDiagram\nA ||--o{ B : x\n");
+        h.state_mut().handle_picked(
+            &ctx,
+            Picked {
+                purpose: Purpose::Open,
+                side: a.clone(),
+            },
+        );
+        assert_eq!(h.state().source, Some(Source::View(a.clone())));
+        // The open diagram becomes the new side of the comparison.
+        let old = text("old.mmd", "erDiagram\nA ||--o{ B : x\nB ||--o{ C : y\n");
+        h.state_mut().handle_picked(
+            &ctx,
+            Picked {
+                purpose: Purpose::CompareWith,
+                side: old.clone(),
+            },
+        );
+        assert_eq!(h.state().source, Some(Source::Diff { old, new: a }));
+    }
+
+    #[test]
+    fn compare_with_file_works_on_the_example() {
+        let mut h = headless(Some(Source::View(Side::example())));
+        h.run_steps(2);
+        let ctx = h.ctx.clone();
+        let old = text("old.mmd", "erDiagram\nCUSTOMER { int id }\n");
+        h.state_mut().handle_picked(
+            &ctx,
+            Picked {
+                purpose: Purpose::CompareWith,
+                side: old.clone(),
+            },
+        );
+        assert_eq!(
+            h.state().source,
+            Some(Source::Diff {
+                old,
+                new: Side::example()
+            })
+        );
+        assert!(h.state().scene.as_ref().unwrap().diff.is_some());
+    }
+
+    #[test]
+    fn cancelled_dialog_changes_nothing() {
+        let mut h = headless(Some(Source::View(Side::example())));
+        h.run_steps(2);
+        let picker = h.state().picker.clone();
+        assert!(
+            picker.take().is_empty(),
+            "nothing delivered: nothing to handle"
+        );
+        h.run_steps(2);
+        assert_eq!(h.state().source, Some(Source::View(Side::example())));
+    }
+
+    #[test]
+    fn non_utf8_and_non_mermaid_files_open_without_crashing() {
+        let side = crate::picker::text_side("weird.mmd", &[0xff, 0xfe, b'x', b'\n']);
+        let Side::Text { name, text: t } = &side else {
+            panic!("in-memory side expected")
+        };
+        assert_eq!(name, "weird.mmd");
+        assert!(t.contains('\u{FFFD}'));
+        let mut h = headless(None);
+        h.run_steps(2);
+        let ctx = h.ctx.clone();
+        h.state_mut().handle_picked(
+            &ctx,
+            Picked {
+                purpose: Purpose::Open,
+                side,
+            },
+        );
+        assert!(h.state().scene.is_some());
+    }
+
+    #[derive(Debug)]
+    struct DroppedPath(PathBuf);
+
+    impl egui::DroppedFile for DroppedPath {
+        fn path(&self) -> &Path {
+            &self.0
+        }
+        fn bytes(&self) -> Result<Vec<u8>, String> {
+            std::fs::read(&self.0).map_err(|e| e.to_string())
+        }
+    }
+
+    #[test]
+    fn dropped_files_are_opened_by_path_on_the_desktop() {
+        let ctx = Context::default();
+        let picker = crate::picker::Picker::default();
+        picker.dropped(
+            &(std::sync::Arc::new(DroppedPath("/tmp/x.mmd".into())) as egui::DroppedFileHandle),
+            &ctx,
+        );
+        picker.dropped(
+            &(std::sync::Arc::new(DroppedPath(PathBuf::new())) as egui::DroppedFileHandle),
+            &ctx,
+        );
+        let got: Vec<(Purpose, Side)> = picker
+            .take()
+            .into_iter()
+            .map(|p| (p.purpose, p.side))
+            .collect();
+        assert_eq!(
+            got,
+            [(Purpose::Open, Side::File("/tmp/x.mmd".into()))],
+            "a drop without a path is ignored"
+        );
+    }
+
+    #[test]
+    fn pasting_opens_text_and_empty_paste_keeps_the_diagram() {
+        let mut h = headless(Some(Source::View(Side::example())));
+        h.run_steps(2);
+        let ctx = h.ctx.clone();
+        h.state_mut().apply(&ctx, Action::Paste, 0.0);
+        h.state_mut().paste = Some("   \n".into());
+        h.state_mut().apply(&ctx, Action::OpenPasted, 0.0);
+        assert_eq!(
+            h.state().source,
+            Some(Source::View(Side::example())),
+            "empty paste: nothing replaced"
+        );
+        assert!(h.state().paste.is_some(), "window stays open");
+        assert!(h.state().status.contains("Nothing to open"));
+        h.state_mut().paste = Some("erDiagram\nP ||--o{ Q : r\n".into());
+        h.state_mut().apply(&ctx, Action::OpenPasted, 0.0);
+        assert_eq!(
+            h.state().source,
+            Some(Source::View(text(
+                "pasted.mmd",
+                "erDiagram\nP ||--o{ Q : r\n"
+            )))
+        );
+        assert!(h.state().paste.is_none());
+    }
+
+    #[test]
+    fn exit_diff_returns_to_an_in_memory_diagram() {
+        let (old, new) = (
+            text("old.mmd", "erDiagram\nA ||--o{ B : x\n"),
+            text("new.mmd", "erDiagram\nA ||--o{ C : y\n"),
+        );
+        let mut h = headless(Some(Source::Diff {
+            old,
+            new: new.clone(),
+        }));
+        h.run_steps(2);
+        assert!(h.state().in_diff());
+        let ctx = h.ctx.clone();
+        h.state_mut().apply(&ctx, Action::ExitDiff, 0.0);
+        assert_eq!(h.state().source, Some(Source::View(new)));
+    }
+
+    #[test]
+    fn a_layout_saved_for_another_diagram_is_not_applied() {
+        let dir = tempfile::tempdir().unwrap();
+        let file = dir.path().join("schema.mmd");
+        std::fs::write(&file, "erDiagram\nA ||--o{ B : x\n").unwrap();
+        // Same file name, unrelated diagram: far-away camera, panels hidden.
+        let foreign = SavedLayout {
+            entities: [(
+                "X".to_owned(),
+                crate::scene::SavedNode {
+                    open: true,
+                    x: 9000.0,
+                    y: 9000.0,
+                },
+            )]
+            .into(),
+            camera: Some([-9000.0, -9000.0, 3.0]),
+            panels_hidden: true,
+            ..Default::default()
+        };
+        crate::persist::save(&crate::persist::LayoutKey::Path(file.clone()), &foreign).unwrap();
+        let mut h = headless(Some(Source::View(Side::File(file))));
+        h.run_steps(3);
+        let app = h.state();
+        assert!(
+            !app.panels_hidden,
+            "a foreign layout's view state is ignored"
+        );
+        assert!(
+            app.cam.zoom < 3.0,
+            "the view is fitted, not the foreign camera"
+        );
+    }
+
+    #[test]
+    fn about_window_and_github_link() {
+        let mut h = headless(None);
+        h.run_steps(2);
+        let ctx = h.ctx.clone();
+        h.state_mut().apply(&ctx, Action::ShowAbout, 0.0);
+        assert!(h.state().show_about);
+        h.run_steps(1);
+        h.state_mut().apply(&ctx, Action::OpenGithub, 0.0);
+        let opened: Vec<String> = ctx.output(|o| {
+            o.commands
+                .iter()
+                .filter_map(|c| match c {
+                    egui::OutputCommand::OpenUrl(u) => Some(u.url.clone()),
+                    _ => None,
+                })
+                .collect()
+        });
+        assert_eq!(opened, [GITHUB_URL]);
+        assert_eq!(GITHUB_URL, "https://github.com/smartnuance/er-nuance");
+    }
+
+    #[test]
+    #[ignore = "needs a GPU; writes PNGs for manual inspection"]
+    fn render_about() {
+        let dir = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("target/screenshots");
+        std::fs::create_dir_all(&dir).unwrap();
+        let mut h = Harness::builder()
+            .with_size(vec2(1000.0, 640.0))
+            .wgpu()
+            .build_eframe(|cc| ErApp::new(cc, None));
+        h.run_steps(5);
+        let ctx = h.ctx.clone();
+        h.state_mut().apply(&ctx, Action::ShowAbout, 0.0);
+        h.run_steps(10);
+        h.render().unwrap().save(dir.join("18-about.png")).unwrap();
     }
 }

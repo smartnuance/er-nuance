@@ -1,0 +1,47 @@
+[config]
+default_to_workspace = false
+
+[env]
+DOCKER_REGISTRY = "ghcr.io/smartnuance"
+IMAGE_NAME = "er-nuance"
+KUBE_CONTEXT = "contentnuance"
+
+[tasks.web-serve]
+description = "Run the web version locally with live rebuilds"
+command = "trunk"
+args = ["serve", "--open"]
+
+[tasks.web-image]
+description = "Build the web image (linux/amd64)"
+script = '''
+#!/bin/bash
+set -euo pipefail
+VERSION=$(grep "^version" Cargo.toml | head -1 | cut -d'"' -f2)
+docker buildx build --platform linux/amd64 --load \
+  -t "${DOCKER_REGISTRY}/${IMAGE_NAME}:${VERSION}" -t "${DOCKER_REGISTRY}/${IMAGE_NAME}:latest" .
+'''
+
+[tasks.web-push]
+description = "Push the web image to ghcr"
+dependencies = ["web-image"]
+script = '''
+#!/bin/bash
+set -euo pipefail
+VERSION=$(grep "^version" Cargo.toml | head -1 | cut -d'"' -f2)
+docker push "${DOCKER_REGISTRY}/${IMAGE_NAME}:${VERSION}"
+docker push "${DOCKER_REGISTRY}/${IMAGE_NAME}:latest"
+'''
+
+[tasks.web-deploy]
+description = "Deploy the current version to the contentnuance cluster"
+script = '''
+#!/bin/bash
+set -euo pipefail
+VERSION=$(grep "^version" Cargo.toml | head -1 | cut -d'"' -f2)
+sed -i.bak "s|image: .*er-nuance:.*|image: ${DOCKER_REGISTRY}/${IMAGE_NAME}:${VERSION}|" k8s/deployment.yaml
+rm -f k8s/deployment.yaml.bak
+kubectl --context="${KUBE_CONTEXT}" apply -k k8s/
+# The tag may be unchanged (same version, rebuilt image): restart so the new image is pulled.
+kubectl --context="${KUBE_CONTEXT}" rollout restart deployment/er-nuance -n er-nuance
+kubectl --context="${KUBE_CONTEXT}" rollout status deployment/er-nuance -n er-nuance --timeout=90s
+'''

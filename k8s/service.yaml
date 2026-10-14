@@ -1,0 +1,14 @@
+apiVersion: v1
+kind: Service
+metadata:
+  name: er-nuance
+  labels:
+    app: er-nuance
+spec:
+  type: ClusterIP
+  selector:
+    app: er-nuance
+  ports:
+    - port: 80
+      targetPort: http
+      name: http

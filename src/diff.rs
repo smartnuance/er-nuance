@@ -134,7 +134,13 @@ pub fn type_text(a: &Attribute, d: Option<&AttrDiff>) -> String {
 
 /// Text of an attribute's keys column: `old → new` when the keys changed.
 pub fn keys_text(a: &Attribute, d: Option<&AttrDiff>) -> String {
-    let keys = |a: &Attribute| if a.keys.is_empty() { "none".to_owned() } else { a.keys.join(",") };
+    let keys = |a: &Attribute| {
+        if a.keys.is_empty() {
+            "none".to_owned()
+        } else {
+            a.keys.join(",")
+        }
+    };
     match d.and_then(|d| d.old.as_ref()) {
         Some(old) if old.keys != a.keys => format!("{} → {}", keys(old), keys(a)),
         _ => a.keys.join(","),
@@ -154,16 +160,29 @@ pub fn diff(old: &Diagram, new: &Diagram) -> DiffResult {
                 merged.entities[i] = ne.clone();
                 EntityDiff {
                     status: Status::Added,
-                    attrs: vec![AttrDiff { status: Status::Added, old: None }; ne.attributes.len()],
+                    attrs: vec![
+                        AttrDiff {
+                            status: Status::Added,
+                            old: None
+                        };
+                        ne.attributes.len()
+                    ],
                     notes: Vec::new(),
                 }
             }
             Some(oe) => {
                 let (attributes, attrs) = merge_attributes(&oe.attributes, &ne.attributes);
-                merged.entities[i] = crate::model::Entity { attributes, ..ne.clone() };
+                merged.entities[i] = crate::model::Entity {
+                    attributes,
+                    ..ne.clone()
+                };
                 let mut notes = Vec::new();
                 if oe.label != ne.label {
-                    notes.push(format!("name: {} → {}", oe.display_name(), ne.display_name()));
+                    notes.push(format!(
+                        "name: {} → {}",
+                        oe.display_name(),
+                        ne.display_name()
+                    ));
                 }
                 if oe.description != ne.description {
                     notes.push(match (&oe.description, &ne.description) {
@@ -172,12 +191,25 @@ pub fn diff(old: &Diagram, new: &Diagram) -> DiffResult {
                         _ => "description changed".to_owned(),
                     });
                 }
-                let added: Vec<String> = ne.tags.iter().filter(|t| !oe.tags.contains(t)).map(|t| format!("+#{t}")).collect();
-                let removed: Vec<String> = oe.tags.iter().filter(|t| !ne.tags.contains(t)).map(|t| format!("−#{t}")).collect();
+                let added: Vec<String> = ne
+                    .tags
+                    .iter()
+                    .filter(|t| !oe.tags.contains(t))
+                    .map(|t| format!("+#{t}"))
+                    .collect();
+                let removed: Vec<String> = oe
+                    .tags
+                    .iter()
+                    .filter(|t| !ne.tags.contains(t))
+                    .map(|t| format!("−#{t}"))
+                    .collect();
                 if !added.is_empty() || !removed.is_empty() {
                     notes.push(format!("tags: {}", [added, removed].concat().join(" ")));
                 }
-                let (og, ng) = (old_groups.get(ne.id.as_str()), new_groups.get(ne.id.as_str()));
+                let (og, ng) = (
+                    old_groups.get(ne.id.as_str()),
+                    new_groups.get(ne.id.as_str()),
+                );
                 if og != ng {
                     let name = |g: Option<&&str>| g.map_or("none", |g| g).to_owned();
                     notes.push(format!("group: {} → {}", name(og), name(ng)));
@@ -186,22 +218,44 @@ pub fn diff(old: &Diagram, new: &Diagram) -> DiffResult {
                     match d.status {
                         Status::Added => notes.push(format!("field added: {}", a.name)),
                         Status::Removed => notes.push(format!("field removed: {}", a.name)),
-                        Status::Changed => notes.push(format!("field changed: {}{}", a.name, attr_change(d.old.as_ref().unwrap(), a))),
+                        Status::Changed => notes.push(format!(
+                            "field changed: {}{}",
+                            a.name,
+                            attr_change(d.old.as_ref().unwrap(), a)
+                        )),
                         Status::Same => {}
                     }
                 }
-                let status = if notes.is_empty() { Status::Same } else { Status::Changed };
-                EntityDiff { status, attrs, notes }
+                let status = if notes.is_empty() {
+                    Status::Same
+                } else {
+                    Status::Changed
+                };
+                EntityDiff {
+                    status,
+                    attrs,
+                    notes,
+                }
             }
         };
         entities.push(ed);
     }
-    for oe in old.entities.iter().filter(|oe| new.entity_index(&oe.id).is_none()) {
+    for oe in old
+        .entities
+        .iter()
+        .filter(|oe| new.entity_index(&oe.id).is_none())
+    {
         let i = merged.ensure_entity(&oe.id);
         merged.entities[i] = oe.clone();
         entities.push(EntityDiff {
             status: Status::Removed,
-            attrs: vec![AttrDiff { status: Status::Removed, old: None }; oe.attributes.len()],
+            attrs: vec![
+                AttrDiff {
+                    status: Status::Removed,
+                    old: None
+                };
+                oe.attributes.len()
+            ],
             notes: Vec::new(),
         });
     }
@@ -219,25 +273,48 @@ pub fn diff(old: &Diagram, new: &Diagram) -> DiffResult {
     let mut relationships = Vec::new();
     for nr in &new.relationships {
         let remapped = remap(new, &merged, nr);
-        let rd = match unmatched.get_mut(&key(new, nr)).and_then(VecDeque::pop_front) {
-            None => RelDiff { status: Status::Added, note: None },
+        let rd = match unmatched
+            .get_mut(&key(new, nr))
+            .and_then(VecDeque::pop_front)
+        {
+            None => RelDiff {
+                status: Status::Added,
+                note: None,
+            },
             Some(o) => {
                 let or = &old.relationships[o];
                 // Orient the old one like the new one before comparing ends.
                 let same_way = old.entities[or.a].id == new.entities[nr.a].id;
-                let (oca, ocb) = if same_way { (or.card_a, or.card_b) } else { (or.card_b, or.card_a) };
+                let (oca, ocb) = if same_way {
+                    (or.card_a, or.card_b)
+                } else {
+                    (or.card_b, or.card_a)
+                };
                 let mut changes = Vec::new();
                 if (oca, ocb) != (nr.card_a, nr.card_b) {
-                    changes.push(format!("{} : {} → {} : {}", oca.short(), ocb.short(), nr.card_a.short(), nr.card_b.short()));
+                    changes.push(format!(
+                        "{} : {} → {} : {}",
+                        oca.short(),
+                        ocb.short(),
+                        nr.card_a.short(),
+                        nr.card_b.short()
+                    ));
                 }
                 if or.identifying != nr.identifying {
                     let kind = |i: bool| if i { "identifying" } else { "non-identifying" };
-                    changes.push(format!("{} → {}", kind(or.identifying), kind(nr.identifying)));
+                    changes.push(format!(
+                        "{} → {}",
+                        kind(or.identifying),
+                        kind(nr.identifying)
+                    ));
                 }
                 if changes.is_empty() {
                     RelDiff::default()
                 } else {
-                    RelDiff { status: Status::Changed, note: Some(changes.join(", ")) }
+                    RelDiff {
+                        status: Status::Changed,
+                        note: Some(changes.join(", ")),
+                    }
                 }
             }
         };
@@ -247,22 +324,38 @@ pub fn diff(old: &Diagram, new: &Diagram) -> DiffResult {
     let mut removed: Vec<usize> = unmatched.into_values().flatten().collect();
     removed.sort_unstable();
     for o in removed {
-        merged.relationships.push(remap(old, &merged, &old.relationships[o]));
-        relationships.push(RelDiff { status: Status::Removed, note: None });
+        merged
+            .relationships
+            .push(remap(old, &merged, &old.relationships[o]));
+        relationships.push(RelDiff {
+            status: Status::Removed,
+            note: None,
+        });
     }
 
     // Groups: the new version's, plus removed entities in their old groups.
     merged.groups = new.groups.clone();
-    for oe in old.entities.iter().filter(|oe| new.entity_index(&oe.id).is_none()) {
-        let Some(&g) = old_groups.get(oe.id.as_str()) else { continue };
+    for oe in old
+        .entities
+        .iter()
+        .filter(|oe| new.entity_index(&oe.id).is_none())
+    {
+        let Some(&g) = old_groups.get(oe.id.as_str()) else {
+            continue;
+        };
         match merged.groups.iter_mut().find(|d| d.name == g) {
             Some(d) => d.members.push(oe.id.clone()),
-            None => merged.groups.push(GroupDef { name: g.to_owned(), members: vec![oe.id.clone()] }),
+            None => merged.groups.push(GroupDef {
+                name: g.to_owned(),
+                members: vec![oe.id.clone()],
+            }),
         }
     }
 
     merged.tags = new.tags.clone();
-    merged.tags.extend(old.tags.iter().filter(|t| !new.tags.contains(t)).cloned());
+    merged
+        .tags
+        .extend(old.tags.iter().filter(|t| !new.tags.contains(t)).cloned());
 
     merged.warnings = old
         .warnings
@@ -271,7 +364,13 @@ pub fn diff(old: &Diagram, new: &Diagram) -> DiffResult {
         .chain(new.warnings.iter().map(|w| format!("new: {w}")))
         .collect();
 
-    DiffResult { merged, marks: DiffMarks { entities, relationships } }
+    DiffResult {
+        merged,
+        marks: DiffMarks {
+            entities,
+            relationships,
+        },
+    }
 }
 
 /// The explicit group of each entity id (the first group listing it, as in grouping).
@@ -286,8 +385,15 @@ fn group_names(d: &Diagram) -> HashMap<&str, &str> {
 }
 
 fn remap(from: &Diagram, to: &Diagram, r: &Relationship) -> Relationship {
-    let idx = |e: usize| to.entity_index(&from.entities[e].id).expect("merged has every entity");
-    Relationship { a: idx(r.a), b: idx(r.b), ..r.clone() }
+    let idx = |e: usize| {
+        to.entity_index(&from.entities[e].id)
+            .expect("merged has every entity")
+    };
+    Relationship {
+        a: idx(r.a),
+        b: idx(r.b),
+        ..r.clone()
+    }
 }
 
 /// New attributes in order, each removed one inserted after its old predecessor.
@@ -296,9 +402,15 @@ fn merge_attributes(old: &[Attribute], new: &[Attribute]) -> (Vec<Attribute>, Ve
         .iter()
         .map(|na| {
             let d = match old.iter().find(|oa| oa.name == na.name) {
-                None => AttrDiff { status: Status::Added, old: None },
+                None => AttrDiff {
+                    status: Status::Added,
+                    old: None,
+                },
                 Some(oa) if oa == na => AttrDiff::default(),
-                Some(oa) => AttrDiff { status: Status::Changed, old: Some(oa.clone()) },
+                Some(oa) => AttrDiff {
+                    status: Status::Changed,
+                    old: Some(oa.clone()),
+                },
             };
             (na.clone(), d)
         })
@@ -307,9 +419,22 @@ fn merge_attributes(old: &[Attribute], new: &[Attribute]) -> (Vec<Attribute>, Ve
     for oa in old {
         let kept = new.iter().any(|na| na.name == oa.name);
         if kept {
-            anchor = out.iter().position(|(a, d)| a.name == oa.name && d.status != Status::Removed).unwrap() + 1;
+            anchor = out
+                .iter()
+                .position(|(a, d)| a.name == oa.name && d.status != Status::Removed)
+                .unwrap()
+                + 1;
         } else {
-            out.insert(anchor, (oa.clone(), AttrDiff { status: Status::Removed, old: None }));
+            out.insert(
+                anchor,
+                (
+                    oa.clone(),
+                    AttrDiff {
+                        status: Status::Removed,
+                        old: None,
+                    },
+                ),
+            );
             anchor += 1;
         }
     }
@@ -322,16 +447,28 @@ fn attr_change(old: &Attribute, new: &Attribute) -> String {
         parts.push(format!("type {} → {}", old.ty, new.ty));
     }
     if old.keys != new.keys {
-        parts.push(format!("keys {} → {}", keys_or_none(old), keys_or_none(new)));
+        parts.push(format!(
+            "keys {} → {}",
+            keys_or_none(old),
+            keys_or_none(new)
+        ));
     }
     if old.comment != new.comment {
         parts.push("comment".to_owned());
     }
-    if parts.is_empty() { String::new() } else { format!(" ({})", parts.join(", ")) }
+    if parts.is_empty() {
+        String::new()
+    } else {
+        format!(" ({})", parts.join(", "))
+    }
 }
 
 fn keys_or_none(a: &Attribute) -> String {
-    if a.keys.is_empty() { "none".to_owned() } else { a.keys.join(",") }
+    if a.keys.is_empty() {
+        "none".to_owned()
+    } else {
+        a.keys.join(",")
+    }
 }
 
 #[cfg(test)]
@@ -383,13 +520,19 @@ CUSTOMER {
 
     #[test]
     fn reversed_relationship_is_the_same_relationship() {
-        let reversed = BASE.replace("CUSTOMER ||--o{ ORDER : places", "ORDER }o--|| CUSTOMER : places");
+        let reversed = BASE.replace(
+            "CUSTOMER ||--o{ ORDER : places",
+            "ORDER }o--|| CUSTOMER : places",
+        );
         assert!(run(BASE, &reversed).marks.is_identical());
     }
 
     #[test]
     fn added_and_removed_entities() {
-        let new = BASE.replace("ORDER }o--|| PRODUCT : refers", "ORDER }o--|| ITEM : refers");
+        let new = BASE.replace(
+            "ORDER }o--|| PRODUCT : refers",
+            "ORDER }o--|| ITEM : refers",
+        );
         let r = run(BASE, &new);
         assert_eq!(status_of(&r, "ITEM"), Status::Added);
         assert_eq!(status_of(&r, "PRODUCT"), Status::Removed);
@@ -399,27 +542,59 @@ CUSTOMER {
         // The removed relationship still points at the (removed) entity in the merged diagram.
         let removed = &r.merged.relationships[2];
         assert_eq!(r.merged.entities[removed.b].id, "PRODUCT");
-        assert_eq!(r.marks.entity_counts(), Counts { added: 1, removed: 1, changed: 0 });
+        assert_eq!(
+            r.marks.entity_counts(),
+            Counts {
+                added: 1,
+                removed: 1,
+                changed: 0
+            }
+        );
     }
 
     #[test]
     fn attribute_changes_keep_old_values_and_order() {
-        let new = BASE.replace("string id PK", "int id PK").replace("  string name\n", "").replace("string email", "string email UK");
+        let new = BASE
+            .replace("string id PK", "int id PK")
+            .replace("  string name\n", "")
+            .replace("string email", "string email UK");
         let new = new.replace("string email UK\n", "string email UK\n  date born\n");
         let r = run(BASE, &new);
         let c = r.merged.entity_index("CUSTOMER").unwrap();
-        let names: Vec<&str> = r.merged.entities[c].attributes.iter().map(|a| a.name.as_str()).collect();
-        assert_eq!(names, ["id", "name", "email", "born"], "removed field stays where it was");
+        let names: Vec<&str> = r.merged.entities[c]
+            .attributes
+            .iter()
+            .map(|a| a.name.as_str())
+            .collect();
+        assert_eq!(
+            names,
+            ["id", "name", "email", "born"],
+            "removed field stays where it was"
+        );
         let d = &r.marks.entities[c];
         let st: Vec<Status> = d.attrs.iter().map(|a| a.status).collect();
-        assert_eq!(st, [Status::Changed, Status::Removed, Status::Changed, Status::Added]);
+        assert_eq!(
+            st,
+            [
+                Status::Changed,
+                Status::Removed,
+                Status::Changed,
+                Status::Added
+            ]
+        );
         assert_eq!(d.status, Status::Changed);
         let id = &r.merged.entities[c].attributes[0];
         assert_eq!(type_text(id, Some(&d.attrs[0])), "string → int");
         assert_eq!(keys_text(id, Some(&d.attrs[0])), "PK");
         let email = &r.merged.entities[c].attributes[2];
         assert_eq!(keys_text(email, Some(&d.attrs[2])), "none → UK");
-        assert!(d.notes.iter().any(|n| n == "field changed: id (type string → int)"), "{:?}", d.notes);
+        assert!(
+            d.notes
+                .iter()
+                .any(|n| n == "field changed: id (type string → int)"),
+            "{:?}",
+            d.notes
+        );
     }
 
     #[test]
@@ -428,20 +603,34 @@ CUSTOMER {
         let r = run(BASE, &new);
         let d = &r.marks.relationships[0];
         assert_eq!(d.status, Status::Changed);
-        assert_eq!(d.note.as_deref(), Some("1 : 0..* → 1 : 1..*, identifying → non-identifying"));
+        assert_eq!(
+            d.note.as_deref(),
+            Some("1 : 0..* → 1 : 1..*, identifying → non-identifying")
+        );
     }
 
     #[test]
     fn group_move_label_and_description_mark_entity_changed() {
         let new = BASE
-            .replace("%% group Sales: CUSTOMER, ORDER", "%% group Sales: ORDER\n%% group People: CUSTOMER\n%% describe ORDER: New.")
+            .replace(
+                "%% group Sales: CUSTOMER, ORDER",
+                "%% group Sales: ORDER\n%% group People: CUSTOMER\n%% describe ORDER: New.",
+            )
             .replace("ORDER }o--|| PRODUCT", "ORDER }o--|| p[\"Product\"]")
             .replace("PRODUCT : refers", "p : refers");
         let r = run(BASE, &new);
-        let notes = |id: &str| r.marks.entities[r.merged.entity_index(id).unwrap()].notes.clone();
+        let notes = |id: &str| {
+            r.marks.entities[r.merged.entity_index(id).unwrap()]
+                .notes
+                .clone()
+        };
         assert_eq!(notes("CUSTOMER"), ["group: Sales → People"]);
         assert_eq!(notes("ORDER"), ["description added"]);
-        assert_eq!(status_of(&r, "PRODUCT"), Status::Removed, "renamed id is removed + added");
+        assert_eq!(
+            status_of(&r, "PRODUCT"),
+            Status::Removed,
+            "renamed id is removed + added"
+        );
         assert_eq!(status_of(&r, "p"), Status::Added);
     }
 
@@ -452,24 +641,53 @@ CUSTOMER {
         let r = run(old, new);
         assert_eq!(r.marks.entities[0].notes, ["tags: +#z −#x"]);
         assert_eq!(r.merged.tags, ["y", "z", "x"]);
-        assert!(run(old, &old.replace("#x #y", "#y #x")).marks.is_identical(), "order is not a change");
+        assert!(
+            run(old, &old.replace("#x #y", "#y #x"))
+                .marks
+                .is_identical(),
+            "order is not a change"
+        );
     }
 
     #[test]
     fn removed_entities_stay_in_their_old_group() {
-        let old = "erDiagram\n%% group Gone: A, B\n%% group Kept: C\nA ||--o{ B : x\nB ||--o{ C : y\n";
+        let old =
+            "erDiagram\n%% group Gone: A, B\n%% group Kept: C\nA ||--o{ B : x\nB ||--o{ C : y\n";
         let new = "erDiagram\n%% group Kept: C\nC { int id }\n";
         let r = run(old, new);
-        let groups: Vec<(&str, Vec<&str>)> =
-            r.merged.groups.iter().map(|g| (g.name.as_str(), g.members.iter().map(String::as_str).collect())).collect();
+        let groups: Vec<(&str, Vec<&str>)> = r
+            .merged
+            .groups
+            .iter()
+            .map(|g| {
+                (
+                    g.name.as_str(),
+                    g.members.iter().map(String::as_str).collect(),
+                )
+            })
+            .collect();
         assert_eq!(groups, [("Kept", vec!["C"]), ("Gone", vec!["A", "B"])]);
-        assert_eq!(r.marks.relationship_counts(), Counts { added: 0, removed: 2, changed: 0 });
+        assert_eq!(
+            r.marks.relationship_counts(),
+            Counts {
+                added: 0,
+                removed: 2,
+                changed: 0
+            }
+        );
     }
 
     #[test]
     fn empty_old_side_means_everything_added() {
         let r = diff(&Diagram::default(), &parse(BASE));
-        assert_eq!(r.marks.entity_counts(), Counts { added: 3, removed: 0, changed: 0 });
+        assert_eq!(
+            r.marks.entity_counts(),
+            Counts {
+                added: 3,
+                removed: 0,
+                changed: 0
+            }
+        );
         assert_eq!(r.marks.entity_counts().badge(), "+3");
     }
 }

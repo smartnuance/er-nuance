@@ -89,8 +89,12 @@ pub fn parse(src: &str) -> Diagram {
             let rest = rest.trim();
             match directive(rest, "describe") {
                 Some(body) => match body.split_once(':') {
-                    Some((id, text)) => descriptions.push((unquote(id.trim()).to_owned(), text.trim().to_owned())),
-                    None => d.warnings.push(format!("line {lineno}: describe directive without `:`")),
+                    Some((id, text)) => {
+                        descriptions.push((unquote(id.trim()).to_owned(), text.trim().to_owned()))
+                    }
+                    None => d
+                        .warnings
+                        .push(format!("line {lineno}: describe directive without `:`")),
                 },
                 None => parse_directive(&mut d, rest),
             }
@@ -105,7 +109,9 @@ pub fn parse(src: &str) -> Diagram {
             if !content.is_empty() {
                 match parse_attribute(content) {
                     Some(a) => d.entities[e].attributes.push(a),
-                    None => d.warnings.push(format!("line {lineno}: cannot parse attribute `{content}`")),
+                    None => d
+                        .warnings
+                        .push(format!("line {lineno}: cannot parse attribute `{content}`")),
                 }
             }
             if closes {
@@ -136,7 +142,8 @@ pub fn parse(src: &str) -> Diagram {
             let head = line[..brace].trim();
             let tail = line[brace + 1..].trim();
             let Some((id, label)) = parse_entity_ref(head) else {
-                d.warnings.push(format!("line {lineno}: cannot parse entity `{head}`"));
+                d.warnings
+                    .push(format!("line {lineno}: cannot parse entity `{head}`"));
                 continue;
             };
             let e = d.ensure_entity(&id);
@@ -203,12 +210,14 @@ pub fn parse(src: &str) -> Diagram {
         desc.push_str(&text);
     }
     if current.is_some() {
-        d.warnings.push("unterminated entity block at end of file".to_owned());
+        d.warnings
+            .push("unterminated entity block at end of file".to_owned());
     }
     for g in &d.groups {
         for m in &g.members {
             if d.entity_index(m).is_none() {
-                d.warnings.push(format!("group `{}`: unknown entity `{m}`", g.name));
+                d.warnings
+                    .push(format!("group `{}`: unknown entity `{m}`", g.name));
             }
         }
     }
@@ -218,13 +227,17 @@ pub fn parse(src: &str) -> Diagram {
 /// `group …` / `@group …` → the text after the keyword.
 fn directive<'a>(text: &'a str, keyword: &str) -> Option<&'a str> {
     let text = text.strip_prefix('@').unwrap_or(text);
-    text.strip_prefix(keyword).filter(|r| r.starts_with(char::is_whitespace))
+    text.strip_prefix(keyword)
+        .filter(|r| r.starts_with(char::is_whitespace))
 }
 
 fn parse_directive(d: &mut Diagram, text: &str) {
-    let Some(rest) = directive(text, "group") else { return };
+    let Some(rest) = directive(text, "group") else {
+        return;
+    };
     let Some((name, members)) = rest.split_once(':') else {
-        d.warnings.push(format!("group directive without `:` — `{text}`"));
+        d.warnings
+            .push(format!("group directive without `:` — `{text}`"));
         return;
     };
     let name = unquote(name.trim()).to_owned();
@@ -258,9 +271,10 @@ fn parse_relationship(d: &mut Diagram, line: &str) -> bool {
     let Some((card_a, identifying, card_b)) = parsed else {
         return false;
     };
-    let (Some((ida, la)), Some((idb, lb))) =
-        (parse_entity_ref(&toks[0]), parse_entity_ref(&toks[toks.len() - 1]))
-    else {
+    let (Some((ida, la)), Some((idb, lb))) = (
+        parse_entity_ref(&toks[0]),
+        parse_entity_ref(&toks[toks.len() - 1]),
+    ) else {
         return false;
     };
     let a = d.ensure_entity(&ida);
@@ -271,7 +285,14 @@ fn parse_relationship(d: &mut Diagram, line: &str) -> bool {
     if lb.is_some() {
         d.entities[b].label = lb;
     }
-    d.relationships.push(Relationship { a, b, card_a, card_b, identifying, label });
+    d.relationships.push(Relationship {
+        a,
+        b,
+        card_a,
+        card_b,
+        identifying,
+        label,
+    });
     true
 }
 
@@ -340,7 +361,12 @@ fn parse_attribute(text: &str) -> Option<Attribute> {
         if t.starts_with('"') {
             a.comment = Some(unquote(t).to_owned());
         } else {
-            a.keys.extend(t.split(',').map(str::trim).filter(|k| !k.is_empty()).map(str::to_owned));
+            a.keys.extend(
+                t.split(',')
+                    .map(str::trim)
+                    .filter(|k| !k.is_empty())
+                    .map(str::to_owned),
+            );
         }
     }
     Some(a)
@@ -364,7 +390,10 @@ fn parse_entity_ref(tok: &str) -> Option<(String, Option<String>)> {
         let alias = tok[open + 1..].strip_suffix(']')?;
         return Some((id.to_owned(), Some(unquote(alias.trim()).to_owned())));
     }
-    if tok.chars().any(|c| matches!(c, '{' | '}' | '|' | ':' | '"')) {
+    if tok
+        .chars()
+        .any(|c| matches!(c, '{' | '}' | '|' | ':' | '"'))
+    {
         return None;
     }
     Some((tok.to_owned(), None))
@@ -394,7 +423,9 @@ fn tokenize(s: &str) -> Vec<String> {
 }
 
 fn unquote(s: &str) -> &str {
-    s.strip_prefix('"').and_then(|s| s.strip_suffix('"')).unwrap_or(s)
+    s.strip_prefix('"')
+        .and_then(|s| s.strip_suffix('"'))
+        .unwrap_or(s)
 }
 
 fn find_outside_quotes(s: &str, needle: char) -> Option<usize> {
@@ -468,20 +499,37 @@ erDiagram
         assert_eq!(
             names,
             [
-                "CUSTOMER", "ORDER", "LINE-ITEM", "PRODUCT", "p", "Spaced Name", "CAR", "DRIVER",
-                "GARAGE", "LONELY"
+                "CUSTOMER",
+                "ORDER",
+                "LINE-ITEM",
+                "PRODUCT",
+                "p",
+                "Spaced Name",
+                "CAR",
+                "DRIVER",
+                "GARAGE",
+                "LONELY"
             ]
         );
         assert_eq!(d.entities[4].display_name(), "Person Alias");
 
         let r = &d.relationships;
         assert_eq!(r.len(), 5);
-        assert_eq!((r[0].card_a, r[0].card_b, r[0].identifying), (ExactlyOne, ZeroOrMany, true));
+        assert_eq!(
+            (r[0].card_a, r[0].card_b, r[0].identifying),
+            (ExactlyOne, ZeroOrMany, true)
+        );
         assert_eq!(r[1].card_b, OneOrMany);
-        assert_eq!((r[2].card_a, r[2].card_b, r[2].identifying), (OneOrMany, ZeroOrOne, false));
+        assert_eq!(
+            (r[2].card_a, r[2].card_b, r[2].identifying),
+            (OneOrMany, ZeroOrOne, false)
+        );
         assert_eq!(r[2].label, "is in");
         assert_eq!((r[3].card_a, r[3].card_b), (ExactlyOne, ZeroOrMany));
-        assert_eq!((r[4].card_a, r[4].card_b, r[4].identifying), (OneOrMany, ExactlyOne, false));
+        assert_eq!(
+            (r[4].card_a, r[4].card_b, r[4].identifying),
+            (OneOrMany, ExactlyOne, false)
+        );
 
         let c = &d.entities[0].attributes;
         assert_eq!(c.len(), 3);
@@ -497,22 +545,38 @@ erDiagram
 
     #[test]
     fn descriptions_attach_to_entities() {
-        let d = parse("erDiagram\n%% describe A: First: with colon.\n%% describe A: Second.\n%% @describe \"B\": *b*\n%% describe NOPE: x\nA ||--|| B : r\n");
-        assert_eq!(d.entities[0].description.as_deref(), Some("First: with colon.\nSecond."));
+        let d = parse(
+            "erDiagram\n%% describe A: First: with colon.\n%% describe A: Second.\n%% @describe \"B\": *b*\n%% describe NOPE: x\nA ||--|| B : r\n",
+        );
+        assert_eq!(
+            d.entities[0].description.as_deref(),
+            Some("First: with colon.\nSecond.")
+        );
         assert_eq!(d.entities[1].description.as_deref(), Some("*b*"));
         assert_eq!(d.warnings.len(), 1);
     }
 
     #[test]
     fn tags_come_out_of_descriptions() {
-        let d = parse("erDiagram\n%% describe A: #CONSUMER A consumer of #events, see C# and issue #3.\n%% describe B: #ops #CONSUMER\n%% describe A: #ops\nA ||--|| B : r\n");
+        let d = parse(
+            "erDiagram\n%% describe A: #CONSUMER A consumer of #events, see C# and issue #3.\n%% describe B: #ops #CONSUMER\n%% describe A: #ops\nA ||--|| B : r\n",
+        );
         assert_eq!(d.entities[0].tags, ["CONSUMER", "events", "ops"]);
-        assert_eq!(d.entities[0].description.as_deref(), Some("A consumer of see C# and issue #3."));
+        assert_eq!(
+            d.entities[0].description.as_deref(),
+            Some("A consumer of see C# and issue #3.")
+        );
         assert_eq!(d.entities[1].tags, ["ops", "CONSUMER"]);
-        assert_eq!(d.entities[1].description, None, "a line of only tags adds no text");
+        assert_eq!(
+            d.entities[1].description, None,
+            "a line of only tags adds no text"
+        );
         assert_eq!(d.tags, ["CONSUMER", "events", "ops"]);
         assert_eq!(d.tag_index("ops"), Some(2));
-        assert_eq!(split_tags("x #a-b_1: y"), (vec!["a-b_1".to_owned()], "x y".to_owned()));
+        assert_eq!(
+            split_tags("x #a-b_1: y"),
+            (vec!["a-b_1".to_owned()], "x y".to_owned())
+        );
         assert_eq!(split_tags("keep  spacing # here").1, "keep  spacing # here");
     }
 

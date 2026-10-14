@@ -143,7 +143,9 @@ pub fn remove_overlaps(centers: &mut [Pos2], sizes: &[Vec2], pinned: &[bool], ga
 pub fn compact(pos: &mut [Pos2], sizes: &[Vec2], gap: f32) {
     let free = vec![false; pos.len()];
     let area = |p: &[Pos2]| {
-        let r = p.iter().zip(sizes).fold(egui::Rect::NOTHING, |r, (p, s)| r.union(egui::Rect::from_center_size(*p, *s)));
+        let r = p.iter().zip(sizes).fold(egui::Rect::NOTHING, |r, (p, s)| {
+            r.union(egui::Rect::from_center_size(*p, *s))
+        });
         r.width() * r.height()
     };
     let mut best = area(pos);
@@ -162,7 +164,12 @@ pub fn compact(pos: &mut [Pos2], sizes: &[Vec2], gap: f32) {
 
 /// Places nodes whose position is `None` next to their placed neighbours (or beside the existing
 /// layout), keeping known positions fixed. Falls back to a full layout if nothing is known.
-pub fn place_new(known: &[Option<Pos2>], sizes: &[Vec2], edges: &[(usize, usize)], gap: f32) -> Vec<Pos2> {
+pub fn place_new(
+    known: &[Option<Pos2>],
+    sizes: &[Vec2],
+    edges: &[(usize, usize)],
+    gap: f32,
+) -> Vec<Pos2> {
     if known.iter().all(Option::is_none) {
         return force_layout(sizes, edges, gap);
     }
@@ -170,7 +177,13 @@ pub fn place_new(known: &[Option<Pos2>], sizes: &[Vec2], edges: &[(usize, usize)
     let placed: Vec<Pos2> = known.iter().flatten().copied().collect();
     let right = placed
         .iter()
-        .zip(known.iter().zip(sizes).filter(|(k, _)| k.is_some()).map(|(_, s)| s))
+        .zip(
+            known
+                .iter()
+                .zip(sizes)
+                .filter(|(k, _)| k.is_some())
+                .map(|(_, s)| s),
+        )
         .map(|(p, s)| p.x + s.x * 0.5)
         .fold(f32::MIN, f32::max);
     let mid_y = centroid(&placed).y;
@@ -230,7 +243,9 @@ mod tests {
 
     #[test]
     fn force_layout_has_no_overlaps() {
-        let sizes: Vec<Vec2> = (0..40).map(|i| vec2(80.0 + (i % 5) as f32 * 30.0, 26.0 + (i % 3) as f32 * 60.0)).collect();
+        let sizes: Vec<Vec2> = (0..40)
+            .map(|i| vec2(80.0 + (i % 5) as f32 * 30.0, 26.0 + (i % 3) as f32 * 60.0))
+            .collect();
         let edges: Vec<(usize, usize)> = (1..40).map(|i| (i, i / 3)).collect();
         let pos = force_layout(&sizes, &edges, 30.0);
         assert!(!overlaps(&pos, &sizes));
